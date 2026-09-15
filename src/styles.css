@@ -1,5 +1,10 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 :root {
   --bg: #f6f5f1;
   --card-bg: #ffffff;
@@ -37,7 +42,7 @@ body {
   align-items: center;
   justify-content: center;
   min-height: 100vh;
-  padding: 24px;
+  padding: 16px;
 }
 
 .card {
@@ -46,7 +51,7 @@ body {
   border-radius: 12px;
   max-width: 1000px;
   width: 100%;
-  padding: 32px 36px;
+  padding: 24px 18px;
 }
 
 .card-title {
@@ -85,10 +90,12 @@ body {
 .btn-row {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .btn {
-  padding: 8px 16px;
+  padding: 10px 16px;
+  min-height: 40px;
   border-radius: 6px;
   font-size: 13px;
   font-weight: 500;
@@ -98,7 +105,6 @@ body {
   background: var(--button-secondary-bg);
   color: var(--button-secondary-text);
 }
-
 .btn:hover { filter: brightness(0.95); }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
@@ -177,7 +183,8 @@ input:focus, select:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  gap: 8px;
+  padding: 10px 12px;
   border-radius: 6px;
   background: #fafaf8;
   border: 1px solid var(--border);
@@ -186,6 +193,13 @@ input:focus, select:focus {
 .attendance-row .name {
   font-size: 13px;
   font-weight: 500;
+}
+
+.attendance-row .no-leaders {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60vw;
 }
 
 .attendance-row .status {
@@ -208,13 +222,15 @@ input:focus, select:focus {
 }
 
 .toggle-btn {
-  padding: 4px 12px;
+  padding: 6px 14px;
+  min-height: 36px;
   border-radius: 6px;
   font-size: 12px;
   font-weight: 500;
   border: 1px solid var(--border);
   cursor: pointer;
   transition: background 0.15s;
+  flex-shrink: 0;
 }
 
 .toggle-btn.active-present {
@@ -289,12 +305,18 @@ input:focus, select:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  gap: 8px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   font-size: 13px;
+  overflow: hidden;
 }
 
-.member-row:last-child { border-bottom: none; }
+.member-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .member-row .remove-btn {
   background: none;
@@ -303,6 +325,7 @@ input:focus, select:focus {
   cursor: pointer;
   font-size: 13px;
   font-weight: 600;
+  flex-shrink: 0;
 }
 
 .text-center { text-align: center; }
@@ -326,7 +349,8 @@ input:focus, select:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 32px;
+  gap: 12px;
+  padding: 12px 16px;
   background: #fff;
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -345,6 +369,7 @@ input:focus, select:focus {
   display: block;
   font-size: 15px;
   line-height: 1.2;
+  white-space: nowrap;
 }
 
 .nav-brand em {
@@ -352,6 +377,7 @@ input:focus, select:focus {
   font-style: normal;
   font-size: 12px;
   color: var(--text-sub);
+  white-space: nowrap;
 }
 
 .brand-mark {
@@ -361,6 +387,7 @@ input:focus, select:focus {
   background: var(--primary);
   display: inline-block;
   box-shadow: 0 0 0 4px rgba(31, 92, 82, 0.15);
+  flex-shrink: 0;
 }
 
 .hero {
@@ -368,7 +395,7 @@ input:focus, select:focus {
   background-size: cover;
   background-position: center;
   color: #fff;
-  padding: 72px 32px;
+  padding: 48px 20px;
   text-align: center;
   position: relative;
   overflow: hidden;
@@ -413,56 +440,60 @@ input:focus, select:focus {
 
 .hero-title {
   font-family: Georgia, serif;
-  font-size: 42px;
-  line-height: 1.15;
+  font-size: clamp(30px, 7vw, 52px);
+  line-height: 1.12;
   font-weight: 700;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 
 .hero-subtitle {
-  font-size: 16px;
+  font-size: 15px;
   color: rgba(255, 255, 255, 0.85);
   max-width: 520px;
-  margin: 0 auto 36px;
+  margin: 0 auto 32px;
 }
 
 .hero-stats {
   display: flex;
   justify-content: center;
-  gap: 16px;
+  gap: 10px;
   flex-wrap: wrap;
-  margin-bottom: 40px;
+  margin-bottom: 32px;
 }
 
 .hero-stat {
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 10px;
-  padding: 14px 28px;
-  min-width: 120px;
+  padding: 12px 16px;
+  min-width: 96px;
+  flex: 1 1 auto;
+  max-width: 140px;
 }
 
 .hero-stat-value {
-  font-size: 26px;
+  font-size: 22px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
 .hero-stat-label {
-  font-size: 12px;
+  font-size: 11px;
   color: rgba(255, 255, 255, 0.75);
   margin-top: 2px;
 }
 
 .hero-cta {
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
   justify-content: center;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .btn-lg {
-  padding: 12px 24px;
+  padding: 13px 24px;
+  min-height: 48px;
   font-size: 14px;
   border-radius: 8px;
 }
@@ -480,18 +511,18 @@ input:focus, select:focus {
 .signin-section {
   max-width: 720px;
   margin: 0 auto;
-  padding: 56px 24px 24px;
+  padding: 40px 16px 16px;
   width: 100%;
 }
 
 .section-heading {
   text-align: center;
-  margin-bottom: 28px;
+  margin-bottom: 24px;
 }
 
 .section-title {
   font-family: Georgia, serif;
-  font-size: 26px;
+  font-size: clamp(22px, 5vw, 26px);
   color: var(--text-main);
 }
 
@@ -504,6 +535,7 @@ input:focus, select:focus {
 .leader-select {
   padding: 12px;
   font-size: 14px;
+  min-height: 46px;
 }
 
 .landing-note {
@@ -518,6 +550,10 @@ input:focus, select:focus {
   justify-content: center;
 }
 
+.signin-actions .btn {
+  flex: 1 1 auto;
+}
+
 .add-leader-form {
   background: #fafaf8;
   border: 1px solid var(--border);
@@ -529,27 +565,27 @@ input:focus, select:focus {
 .features {
   max-width: 960px;
   margin: 0 auto;
-  padding: 48px 24px;
+  padding: 40px 16px;
   width: 100%;
 }
 
 .feature-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 16px;
+  gap: 14px;
 }
 
 .feature-card {
   background: #fff;
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 24px;
+  padding: 20px;
   overflow: hidden;
 }
 
 .feature-card-image {
   width: 100%;
-  height: 160px;
+  height: 140px;
   object-fit: cover;
   border-radius: 8px;
   margin-bottom: 16px;
@@ -582,7 +618,65 @@ input:focus, select:focus {
   opacity: 0.8;
 }
 
+/* ------------------------------------------------------------------ */
+/* Responsive breakpoints                                              */
+/* ------------------------------------------------------------------ */
+
+@media (min-width: 480px) {
+  .hero-cta {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .hero-cta .btn-lg {
+    width: auto;
+    min-width: 200px;
+  }
+
+  .app-container {
+    padding: 24px;
+  }
+}
+
 @media (min-width: 768px) {
+  .landing-nav {
+    padding: 16px 32px;
+  }
+
+  .hero {
+    padding: 72px 32px;
+  }
+
+  .hero-stat {
+    padding: 14px 24px;
+    min-width: 120px;
+    max-width: none;
+  }
+
+  .hero-stat-value {
+    font-size: 26px;
+  }
+
+  .signin-section {
+    padding: 56px 24px 24px;
+  }
+
+  .features {
+    padding: 48px 24px;
+  }
+
+  .feature-card {
+    padding: 24px;
+  }
+
+  .feature-card-image {
+    height: 160px;
+  }
+
+  .card {
+    padding: 32px 36px;
+  }
+
   .attendance-list {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -591,8 +685,14 @@ input:focus, select:focus {
     grid-template-columns: repeat(3, 1fr);
   }
 
-  .hero-title {
-    font-size: 52px;
+  .member-list {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    column-gap: 12px;
+  }
+
+  .btn-row {
+    flex-wrap: nowrap;
   }
 }
 
@@ -602,10 +702,13 @@ input:focus, select:focus {
   }
 }
 
-@media (min-width: 768px) {
-  .member-list {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    column-gap: 12px;
+@media (max-width: 767px) {
+  .signin-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .signin-actions .btn {
+    width: 100%;
   }
 }
