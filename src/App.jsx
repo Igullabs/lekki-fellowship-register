@@ -1,15 +1,20 @@
 import { useEffect, useMemo, useState } from 'react'
-
-const STORAGE_KEYS = {
-  leaders: 'lekki_fellowship_leaders',
-  members: 'lekki_fellowship_members',
-  attendance: 'lekki_fellowship_attendance',
-}
+import {
+  isSheetConfigured,
+  configureSheet,
+  SHEET_NAMES,
+  fetchRows,
+  addRows,
+  deleteRows,
+  deleteAllRows,
+} from './sheetApi'
 
 const ADMIN_PASSWORD = 'admin'
 
 const CHURCH_NAME = 'Lekki Fellowship'
 const CHURCH_LOCATION = 'Lekki, Lagos State'
+
+const CACHE_KEY = 'lekki_fellowship_state'
 
 const LEKKI_LOCATIONS = [
   'Lekki Phase 1',
@@ -60,32 +65,56 @@ const seed = () => ({
 
 function normalize(state) {
   return {
-    leaders: (state.leaders || []).map((l) => ({
-      location: 'Lekki',
-      ...l,
-    })),
-    members: (state.members || []).map((m) => ({
-      location: 'Lekki',
-      ...m,
-    })),
+    leaders: (state.leaders || []).map((l) => ({ location: 'Lekki', ...l })),
+    members: (state.members || []).map((m) => ({ location: 'Lekki', ...m })),
     attendance: state.attendance || {},
   }
 }
 
-function loadState() {
+function loadCache() {
   try {
-    const raw = localStorage.getItem('lekki_fellowship_state')
+    const raw = localStorage.getItem(CACHE_KEY)
     if (raw) return normalize(JSON.parse(raw))
   } catch (e) {
-    // ignore corrupt storage and use seed
+    // ignore corrupt cache and use seed
   }
-  const state = seed()
+  return seed()
+}
+
+function saveCache(state) {
   try {
-    localStorage.setItem('lekki_fellowship_state', JSON.stringify(state))
+    localStorage.setItem(CACHE_KEY, JSON.stringify(state))
   } catch (e) {
     // ignore storage failures
   }
-  return state
+}
+
+function groupAttendance(rows) {
+  const map = {}
+  for (const row of rows || []) {
+    if (!row.date) continue
+    map[row.date] = map[row.date] || { records: [], takenBy: '' }
+    map[row.date].records.push({ memberId: row.memberId, present: row.present === 'true' || row.present === true })
+    if (row.takenBy) map[row.date].takenBy = row.takenBy
+  }
+  return map
+}
+
+function flattenAttendance(attendance) {
+  const rows = []
+  for (const date in attendance) {
+    const entry = attendance[date]
+    for (const r of entry.records) {
+      if (!r.memberId) continue
+      rows.push({
+        date,
+        memberId: r.memberId,
+        present: r.present ? 'true' : 'false',
+        takenBy: entry.takenBy || '',
+      })
+    }
+  }
+  return rows
 }
 
 function todayKey() {
@@ -102,43 +131,164 @@ function todayLabel() {
 }
 
 export default function App() {
-  const [state, setState] = useState(loadState)
+  const [state, setState] = useState(loadCache)
   const [view, setView] = useState('landing')
   const [selectedLeaderId, setSelectedLeaderId] = useState('')
+  const [syncStatus, setSyncStatus] = useState(
+    isSheetConfigured() ? 'loading' : 'unconfigured'
+  )
 
   useEffect(() => {
-    try {
-      localStorage.setItem('lekki_fellowship_state', JSON.stringify(state))
-    } catch (e) {
-      // ignore storage failures
-    }
+    saveCache(state)
   }, [state])
+
+  useEffect(() => {
+    if (!isSheetConfigured()) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const [leaders, members, attendance] = await Promise.all([
+          fetchRows(SHEET_NAMES.leaders),
+          fetchRows(SHEET_NAMES.members),
+          fetchRows(SHEET_NAMES.attendance),
+        ])
+        if (cancelled) return
+        const loaded = {
+          leaders: leaders.length ? leaders : [],
+          members: members.length ? members : [],
+          attendance: groupAttendance(attendance),
+        }
+        if (loaded.leaders.length || loaded.members.length) {
+          setState(loaded)
+        }
+        setSyncStatus('synced')
+      } catch (e) {
+        if (!cancelled) setSyncStatus('offline')
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const { leaders, members, attendance } = state
 
-  const addLeader = (leader) =>
-    setState((s) => ({ ...s, leaders: [...s.leaders, leader] }))
+  const addLeader = async (leader) => {
+    const nextLeaders = [...state.leaders, leader]
+    setState((s) => ({ ...s, leaders: nextLeaders }))
+    if (!isSheetConfigured()) return
+    try {
+      await addRows(SHEET_NAMES.leaders, [leader])
+      setSyncStatus('synced')
+    } catch (e) {
+      setSyncStatus('offline')
+    }
+  }
 
-  const addMember = (member) =>
-    setState((s) => ({ ...s, members: [...s.members, member] }))
+  const addMember = async (member) => {
+    const nextMembers = [...state.members, member]
+    setState((s) => ({ ...s, members: nextMembers }))
+    if (!isSheetConfigured()) return
+    try {
+      await addRows(SHEET_NAMES.members, [member])
+      setSyncStatus('synced')
+    } catch (e) {
+      setSyncStatus('offline')
+    }
+  }
 
-  const removeMember = (id) =>
-    setState((s) => ({
-      ...s,
-      members: s.members.filter((m) => m.id !== id),
-    }))
+  const removeMember = async (id) => {
+    const nextMembers = state.members.filter((m) => m.id !== id)
+    setState((s) => ({ ...s, members: nextMembers }))
+    if (!isSheetConfigured()) return
+    try {
+      await deleteRows(SHEET_NAMES.members, { id })
+      setSyncStatus('synced')
+    } catch (e) {
+      setSyncStatus('offline')
+    }
+  }
 
-  const saveAttendance = (date, records, takenBy) =>
-    setState((s) => ({
-      ...s,
-      attendance: { ...s.attendance, [date]: { records, takenBy } },
-    }))
+  const saveAttendance = async (date, records, takenBy) => {
+    const nextAttendance = { ...state.attendance, [date]: { records, takenBy } }
+    setState((s) => ({ ...s, attendance: nextAttendance }))
+    if (!isSheetConfigured()) return
+    try {
+      await deleteRows(SHEET_NAMES.attendance, { date })
+      await addRows(
+        SHEET_NAMES.attendance,
+        records.map((r) => ({
+          date,
+          memberId: r.memberId,
+          present: r.present ? 'true' : 'false',
+          takenBy,
+        }))
+      )
+      setSyncStatus('synced')
+    } catch (e) {
+      setSyncStatus('offline')
+    }
+  }
 
-  const resetApp = () => {
+  const refreshFromSheet = async () => {
+    if (!isSheetConfigured()) return
+    setSyncStatus('loading')
+    try {
+      const [leaders, members, attendance] = await Promise.all([
+        fetchRows(SHEET_NAMES.leaders),
+        fetchRows(SHEET_NAMES.members),
+        fetchRows(SHEET_NAMES.attendance),
+      ])
+      setState({
+        leaders: leaders.length ? leaders : [],
+        members: members.length ? members : [],
+        attendance: groupAttendance(attendance),
+      })
+      setSyncStatus('synced')
+    } catch (e) {
+      setSyncStatus('offline')
+    }
+  }
+
+  const connectSheet = async (id) => {
+    configureSheet(id)
+    if (!isSheetConfigured()) {
+      setSyncStatus('unconfigured')
+      return
+    }
+    setSyncStatus('loading')
+    try {
+      const [leaders, members, attendance] = await Promise.all([
+        fetchRows(SHEET_NAMES.leaders),
+        fetchRows(SHEET_NAMES.members),
+        fetchRows(SHEET_NAMES.attendance),
+      ])
+      setState({
+        leaders: leaders.length ? leaders : [],
+        members: members.length ? members : [],
+        attendance: groupAttendance(attendance),
+      })
+      setSyncStatus('synced')
+    } catch (e) {
+      setSyncStatus('offline')
+    }
+  }
+
+  const resetApp = async () => {
     const fresh = seed()
     setState(fresh)
     setView('landing')
     setSelectedLeaderId('')
+    if (!isSheetConfigured()) return
+    try {
+      await deleteAllRows(SHEET_NAMES.leaders)
+      await deleteAllRows(SHEET_NAMES.members)
+      await deleteAllRows(SHEET_NAMES.attendance)
+      setState(seed())
+      setSyncStatus('synced')
+    } catch (e) {
+      setSyncStatus('offline')
+    }
   }
 
   if (view === 'landing') {
@@ -148,9 +298,11 @@ export default function App() {
         members={members}
         attendance={attendance}
         selectedLeaderId={selectedLeaderId}
+        syncStatus={syncStatus}
         onLeaderChange={setSelectedLeaderId}
         onAddLeader={addLeader}
         onEnterAdmin={() => setView('admin-login')}
+        onConnect={connectSheet}
         onStartAttendance={(id) => {
           setSelectedLeaderId(id)
           setView('attendance')
@@ -173,6 +325,9 @@ export default function App() {
             leaders={leaders}
             members={members}
             attendance={attendance}
+            syncStatus={syncStatus}
+            onRefresh={refreshFromSheet}
+            onConnect={connectSheet}
             onAddLeader={addLeader}
             onAddMember={addMember}
             onRemoveMember={removeMember}
@@ -199,15 +354,27 @@ function Landing({
   members,
   attendance,
   selectedLeaderId,
+  syncStatus,
   onLeaderChange,
   onAddLeader,
   onEnterAdmin,
+  onConnect,
   onStartAttendance,
 }) {
   const [showAddForm, setShowAddForm] = useState(false)
   const [name, setName] = useState('')
   const [fellowship, setFellowship] = useState('')
   const [location, setLocation] = useState('Lekki Phase 1')
+  const [showConnect, setShowConnect] = useState(false)
+  const [sheetId, setSheetId] = useState('')
+
+  const submitConnect = (e) => {
+    e.preventDefault()
+    if (!sheetId.trim()) return
+    onConnect(sheetId)
+    setSheetId('')
+    setShowConnect(false)
+  }
 
   const submitLeader = (e) => {
     e.preventDefault()
@@ -248,6 +415,12 @@ function Landing({
           </span>
         </div>
         <div className="nav-actions">
+          <SyncStatus status={syncStatus} />
+          {syncStatus === 'unconfigured' && (
+            <button className="btn btn-outline btn-sm" onClick={() => setShowConnect(true)}>
+              Connect Sheet
+            </button>
+          )}
           <button className="btn btn-outline" onClick={onEnterAdmin}>
             Enter as Admin
           </button>
@@ -308,6 +481,37 @@ function Landing({
               Choose your leader profile to open today's attendance register.
             </p>
           </div>
+
+          {(syncStatus === 'unconfigured' || showConnect) && (
+            <form className="add-leader-form connect-form" onSubmit={submitConnect}>
+              <h3 className="connect-title">Connect Google Sheet</h3>
+              <p className="connect-subtitle">
+                Paste your SheetDB API id to use a Google Sheet as the
+                database for this app.
+              </p>
+              <div className="form-group">
+                <input
+                  value={sheetId}
+                  onChange={(e) => setSheetId(e.target.value)}
+                  placeholder="e.g. a1b2c3d4e5f6g7h8i9j0k1l2m3"
+                />
+              </div>
+              <div className="btn-row">
+                <button type="submit" className="btn btn-primary">
+                  Connect
+                </button>
+                {syncStatus !== 'unconfigured' && (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => setShowConnect(false)}
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </form>
+          )}
 
           <label className="label">I am a leader for:</label>
           {leaders.length === 0 ? (
@@ -440,6 +644,23 @@ function FeatureCard({ title, description, image }) {
   )
 }
 
+const SYNC_LABELS = {
+  synced: { text: 'Connected to Google Sheets', tone: 'ok' },
+  loading: { text: 'Syncing data…', tone: 'pending' },
+  offline: { text: 'Offline - changes saved locally', tone: 'warn' },
+  unconfigured: { text: 'Sheet not connected yet', tone: 'warn' },
+}
+
+function SyncStatus({ status }) {
+  const info = SYNC_LABELS[status] || SYNC_LABELS.unconfigured
+  return (
+    <span className={`sync-status sync-${info.tone}`}>
+      <span className="sync-dot" />
+      {info.text}
+    </span>
+  )
+}
+
 function AdminLogin({ onSuccess, onBack }) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState(false)
@@ -489,6 +710,9 @@ function AdminPanel({
   leaders,
   members,
   attendance,
+  syncStatus,
+  onRefresh,
+  onConnect,
   onAddLeader,
   onAddMember,
   onRemoveMember,
@@ -501,6 +725,14 @@ function AdminPanel({
   const [memberName, setMemberName] = useState('')
   const [memberFellowship, setMemberFellowship] = useState('')
   const [memberLocation, setMemberLocation] = useState('Lekki Phase 1')
+  const [sheetIdInput, setSheetIdInput] = useState('')
+
+  const submitConnect = (e) => {
+    e.preventDefault()
+    if (!sheetIdInput.trim()) return
+    onConnect(sheetIdInput)
+    setSheetIdInput('')
+  }
 
   const submitLeader = (e) => {
     e.preventDefault()
@@ -541,6 +773,11 @@ function AdminPanel({
     <div className="admin-panel">
       <div className="card-title">Admin dashboard</div>
       <div className="card-subtitle">Manage leaders, members and registers.</div>
+
+      <SyncStatus status={syncStatus} />
+      <button className="btn btn-outline mt-8" onClick={onRefresh}>
+        Refresh from Google Sheet
+      </button>
 
       <div className="admin-section-title">Leaders</div>
       {leaders.length === 0 ? (
@@ -669,6 +906,34 @@ function AdminPanel({
           })}
         </div>
       )}
+
+      <div className="settings-box">
+        <h3>Google Sheet database</h3>
+        <p>
+          {syncStatus === 'synced'
+            ? 'Connected. The app reads and writes your Google Sheet.'
+            : syncStatus === 'offline'
+              ? 'Sheet is configured but could not be reached. Check the API id and your internet.'
+              : syncStatus === 'loading'
+                ? 'Syncing with your Google Sheet…'
+                : 'No sheet connected. Paste your SheetDB API id to use a Google Sheet as the database.'}
+        </p>
+        <form className="form-row" onSubmit={submitConnect}>
+          <input
+            value={sheetIdInput}
+            onChange={(e) => setSheetIdInput(e.target.value)}
+            placeholder="SheetDB API id"
+          />
+          <button type="submit" className="btn btn-primary">
+            {syncStatus === 'unconfigured' ? 'Connect' : 'Update / connect'}
+          </button>
+        </form>
+        {syncStatus === 'synced' && (
+          <button className="btn btn-sm mt-8" onClick={onRefresh}>
+            Refresh from sheet
+          </button>
+        )}
+      </div>
 
       <div className="btn-row">
         <button className="btn" onClick={onBack}>
