@@ -72,11 +72,24 @@ export async function addRows(sheet, rows) {
   })
 }
 
+export async function updateRows(sheet, column, value, data) {
+  return request(
+    `/${encodeURIComponent(column)}/${encodeURIComponent(value)}?sheet=${sheet}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ data }),
+    }
+  )
+}
+
 export async function deleteRows(sheet, criteria) {
-  return request(`/q?sheet=${sheet}`, {
-    method: 'DELETE',
-    body: JSON.stringify({ q: criteria }),
-  })
+  const entry = Object.entries(criteria)[0]
+  if (!entry) throw new Error('deleteRows requires at least one criterion')
+  const [column, value] = entry
+  return request(
+    `/${encodeURIComponent(column)}/${encodeURIComponent(value)}?sheet=${sheet}`,
+    { method: 'DELETE' }
+  )
 }
 
 export async function deleteAllRows(sheet) {

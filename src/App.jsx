@@ -5,6 +5,7 @@ import {
   SHEET_NAMES,
   fetchRows,
   addRows,
+  updateRows,
   deleteRows,
   deleteAllRows,
 } from './sheetApi'
@@ -209,6 +210,47 @@ export default function App() {
     }
   }
 
+  const editLeader = async (id, updates) => {
+    const nextLeaders = state.leaders.map((l) =>
+      l.id === id ? { ...l, ...updates } : l
+    )
+    setState((s) => ({ ...s, leaders: nextLeaders }))
+    if (!isSheetConfigured()) return
+    try {
+      await updateRows(SHEET_NAMES.leaders, 'id', id, updates)
+      setSyncStatus('synced')
+    } catch (e) {
+      setSyncStatus('offline')
+    }
+  }
+
+  const editMember = async (id, updates) => {
+    const nextMembers = state.members.map((m) =>
+      m.id === id ? { ...m, ...updates } : m
+    )
+    setState((s) => ({ ...s, members: nextMembers }))
+    if (!isSheetConfigured()) return
+    try {
+      await updateRows(SHEET_NAMES.members, 'id', id, updates)
+      setSyncStatus('synced')
+    } catch (e) {
+      setSyncStatus('offline')
+    }
+  }
+
+  const removeLeader = async (id) => {
+    const nextLeaders = state.leaders.filter((l) => l.id !== id)
+    setState((s) => ({ ...s, leaders: nextLeaders }))
+    if (selectedLeaderId === id) setSelectedLeaderId('')
+    if (!isSheetConfigured()) return
+    try {
+      await deleteRows(SHEET_NAMES.leaders, { id })
+      setSyncStatus('synced')
+    } catch (e) {
+      setSyncStatus('offline')
+    }
+  }
+
   const saveAttendance = async (date, records, takenBy) => {
     const nextAttendance = { ...state.attendance, [date]: { records, takenBy } }
     setState((s) => ({ ...s, attendance: nextAttendance }))
@@ -330,6 +372,9 @@ export default function App() {
             onConnect={connectSheet}
             onAddLeader={addLeader}
             onAddMember={addMember}
+            onEditLeader={editLeader}
+            onEditMember={editMember}
+            onRemoveLeader={removeLeader}
             onRemoveMember={removeMember}
             onReset={resetApp}
             onBack={() => setView('landing')}
@@ -715,17 +760,32 @@ function AdminPanel({
   onConnect,
   onAddLeader,
   onAddMember,
+  onEditLeader,
+  onEditMember,
+  onRemoveLeader,
   onRemoveMember,
   onReset,
   onBack,
 }) {
+  const [tab, setTab] = useState('leaders')
+  const [showAddLeader, setShowAddLeader] = useState(false)
+  const [showAddMember, setShowAddMember] = useState(false)
   const [leaderName, setLeaderName] = useState('')
   const [leaderFellowship, setLeaderFellowship] = useState('')
   const [leaderLocation, setLeaderLocation] = useState('Lekki Phase 1')
   const [memberName, setMemberName] = useState('')
   const [memberFellowship, setMemberFellowship] = useState('')
   const [memberLocation, setMemberLocation] = useState('Lekki Phase 1')
+  const [editing, setEditing] = useState(null)
   const [sheetIdInput, setSheetIdInput] = useState('')
+
+  const today = todayKey()
+  const todayEntry = attendance[today]
+  const presentToday = todayEntry
+    ? todayEntry.records.filter((r) => r.present).length
+    : 0
+  const todayTotal = todayEntry ? todayEntry.records.length : 0
+  const recordDays = Object.keys(attendance).length
 
   const submitConnect = (e) => {
     e.preventDefault()
@@ -747,6 +807,7 @@ function AdminPanel({
     setLeaderName('')
     setLeaderFellowship('')
     setLeaderLocation('Lekki Phase 1')
+    setShowAddLeader(false)
   }
 
   const submitMember = (e) => {
@@ -761,6 +822,30 @@ function AdminPanel({
     setMemberName('')
     setMemberFellowship('')
     setMemberLocation('Lekki Phase 1')
+    setShowAddMember(false)
+  }
+
+  const startEdit = (type, item) => {
+    setEditing({
+      type,
+      id: item.id,
+      name: item.name,
+      fellowship: item.fellowship || 'General',
+      location: item.location || 'Lekki Phase 1',
+    })
+  }
+
+  const saveEdit = (e) => {
+    e.preventDefault()
+    if (!editing || !editing.name.trim()) return
+    const updates = {
+      name: editing.name.trim(),
+      fellowship: editing.fellowship.trim() || 'General',
+      location: editing.location,
+    }
+    if (editing.type === 'leader') onEditLeader(editing.id, updates)
+    else onEditMember(editing.id, updates)
+    setEditing(null)
   }
 
   const history = useMemo(() => {
@@ -769,180 +854,290 @@ function AdminPanel({
       .slice(0, 10)
   }, [attendance])
 
+  const tabButtons = [
+    { id: 'leaders', label: 'Leaders', count: leaders.length },
+    { id: 'members', label: 'Members', count: members.length },
+    { id: 'attendance', label: 'Attendance' },
+    { id: 'settings', label: 'Settings' },
+  ]
+
+  const locationOptions = () =>
+    LEKKI_LOCATIONS.map((loc) => (
+      <option key={loc} value={loc}>
+        {loc}
+      </option>
+    ))
+
+  const renderEditForm = () => (
+    <form className="edit-form" onSubmit={saveEdit}>
+      <div className="edit-fields">
+        <input
+          value={editing.name}
+          onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+          placeholder="Full name"
+        />
+        <input
+          value={editing.fellowship}
+          onChange={(e) => setEditing({ ...editing, fellowship: e.target.value })}
+          placeholder="Fellowship / group"
+        />
+        <select
+          value={editing.location}
+          onChange={(e) => setEditing({ ...editing, location: e.target.value })}
+        >
+          {locationOptions()}
+        </select>
+      </div>
+      <div className="btn-row">
+        <button type="submit" className="btn btn-primary btn-sm">
+          Save
+        </button>
+        <button type="button" className="btn btn-sm" onClick={() => setEditing(null)}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  )
+
+  const rowActions = (type, item) => (
+    <div className="member-actions">
+      <button className="btn btn-sm" onClick={() => startEdit(type, item)}>
+        Edit
+      </button>
+      <button
+        className="btn btn-sm btn-remove"
+        onClick={() =>
+          type === 'leader' ? onRemoveLeader(item.id) : onRemoveMember(item.id)
+        }
+      >
+        Delete
+      </button>
+    </div>
+  )
+
+  const renderRow = (type, item) =>
+    editing && editing.type === type && editing.id === item.id ? (
+      <div className="member-row edit-row" key={item.id}>
+        {renderEditForm()}
+      </div>
+    ) : (
+      <div className="member-row" key={item.id}>
+        <div className="member-info">
+          <span className="member-name">{item.name}</span>
+          <span className="member-meta">
+            {item.fellowship} <span className="pill">{item.location || 'Lekki'}</span>
+          </span>
+        </div>
+        {rowActions(type, item)}
+      </div>
+    )
+
   return (
     <div className="admin-panel">
-      <div className="card-title">Admin dashboard</div>
-      <div className="card-subtitle">Manage leaders, members and registers.</div>
-
-      <SyncStatus status={syncStatus} />
-      <button className="btn btn-outline mt-8" onClick={onRefresh}>
-        Refresh from Google Sheet
-      </button>
-
-      <div className="admin-section-title">Leaders</div>
-      {leaders.length === 0 ? (
-        <div className="no-leaders mb-16">No leaders yet.</div>
-      ) : (
-        <div className="member-list">
-          {leaders.map((l) => (
-            <div className="member-row" key={l.id}>
-              <span>
-                {l.name}{' '}
-                <em className="no-leaders">
-                  {l.fellowship} &middot; {l.location || 'Lekki'}
-                </em>
-              </span>
-            </div>
-          ))}
+      <div className="admin-head">
+        <div>
+          <div className="card-title">Admin dashboard</div>
+          <div className="card-subtitle">Manage leaders, members and registers.</div>
         </div>
-      )}
-      <form onSubmit={submitLeader}>
-        <div className="form-group">
-          <input
-            value={leaderName}
-            onChange={(e) => setLeaderName(e.target.value)}
-            placeholder="Leader name"
-          />
-        </div>
-        <div className="form-group">
-          <input
-            value={leaderFellowship}
-            onChange={(e) => setLeaderFellowship(e.target.value)}
-            placeholder="Fellowship / group"
-          />
-        </div>
-        <div className="form-group">
-          <select
-            value={leaderLocation}
-            onChange={(e) => setLeaderLocation(e.target.value)}
-          >
-            {LEKKI_LOCATIONS.map((loc) => (
-              <option key={loc} value={loc}>
-                {loc}
-              </option>
-            ))}
-          </select>
-        </div>
-        <button type="submit" className="btn btn-primary btn-full mb-16">
-          Add leader
-        </button>
-      </form>
-
-      <div className="divider" />
-
-      <div className="admin-section-title">Members</div>
-      <div className="member-list">
-        {members.length === 0 ? (
-          <div className="member-row no-leaders">No members yet.</div>
-        ) : (
-          members.map((m) => (
-            <div className="member-row" key={m.id}>
-              <span>
-                {m.name}{' '}
-                <em className="no-leaders">
-                  {m.fellowship} &middot; {m.location || 'Lekki'}
-                </em>
-              </span>
-              <button
-                className="remove-btn"
-                onClick={() => onRemoveMember(m.id)}
-              >
-                Remove
-              </button>
-            </div>
-          ))
-        )}
+        <SyncStatus status={syncStatus} />
       </div>
-      <form onSubmit={submitMember}>
-        <div className="form-group">
-          <input
-            value={memberName}
-            onChange={(e) => setMemberName(e.target.value)}
-            placeholder="Member name"
-          />
+
+      <div className="stat-grid">
+        <div className="stat-card">
+          <div className="stat-value">{leaders.length}</div>
+          <div className="stat-label">Leaders</div>
         </div>
-        <div className="form-group">
-          <input
-            value={memberFellowship}
-            onChange={(e) => setMemberFellowship(e.target.value)}
-            placeholder="Fellowship / group"
-          />
+        <div className="stat-card">
+          <div className="stat-value">{members.length}</div>
+          <div className="stat-label">Members</div>
         </div>
-        <div className="form-group">
-          <select
-            value={memberLocation}
-            onChange={(e) => setMemberLocation(e.target.value)}
+        <div className="stat-card">
+          <div className="stat-value">
+            {presentToday}
+            {todayTotal > 0 && <span className="stat-suffix">/{todayTotal}</span>}
+          </div>
+          <div className="stat-label">Present today</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-value">{recordDays}</div>
+          <div className="stat-label">Register days</div>
+        </div>
+      </div>
+
+      <div className="tab-bar">
+        {tabButtons.map((t) => (
+          <button
+            key={t.id}
+            className={'tab-btn' + (tab === t.id ? ' active' : '')}
+            onClick={() => setTab(t.id)}
           >
-            {LEKKI_LOCATIONS.map((loc) => (
-              <option key={loc} value={loc}>
-                {loc}
-              </option>
-            ))}
-          </select>
-        </div>
-        <button type="submit" className="btn btn-primary btn-full mb-16">
-          Add member
-        </button>
-      </form>
+            {t.label}
+            {typeof t.count === 'number' && <span className="tab-count">{t.count}</span>}
+          </button>
+        ))}
+      </div>
 
-      <div className="divider" />
+      {tab === 'leaders' && (
+        <div className="tab-panel">
+          <div className="admin-section-title">Leaders</div>
+          {leaders.length === 0 ? (
+            <div className="empty-state">No leaders yet. Add the first one below.</div>
+          ) : (
+            <div className="roster">{leaders.map((l) => renderRow('leader', l))}</div>
+          )}
 
-      <div className="admin-section-title">Recent attendance</div>
-      {history.length === 0 ? (
-        <div className="no-leaders mb-16">No attendance recorded yet.</div>
-      ) : (
-        <div className="mb-16">
-          {history.map(([date, entry]) => {
-            const presentCount = entry.records.filter((r) => r.present).length
-            return (
-              <div className="history-card" key={date}>
-                <div className="date">{new Date(date).toDateString()}</div>
-                <div className="details">
-                  {presentCount} of {entry.records.length} present &middot;{' '}
-                  taken by {entry.takenBy}
-                </div>
+          {showAddLeader ? (
+            <form className="add-form" onSubmit={submitLeader}>
+              <div className="form-grid">
+                <input
+                  value={leaderName}
+                  onChange={(e) => setLeaderName(e.target.value)}
+                  placeholder="Leader name"
+                />
+                <input
+                  value={leaderFellowship}
+                  onChange={(e) => setLeaderFellowship(e.target.value)}
+                  placeholder="Fellowship / group"
+                />
+                <select
+                  value={leaderLocation}
+                  onChange={(e) => setLeaderLocation(e.target.value)}
+                >
+                  {locationOptions()}
+                </select>
               </div>
-            )
-          })}
+              <div className="btn-row">
+                <button type="submit" className="btn btn-primary">
+                  Add leader
+                </button>
+                <button type="button" className="btn" onClick={() => setShowAddLeader(false)}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : (
+            <button className="btn btn-outline" onClick={() => setShowAddLeader(true)}>
+              + Add leader
+            </button>
+          )}
         </div>
       )}
 
-      <div className="settings-box">
-        <h3>Google Sheet database</h3>
-        <p>
-          {syncStatus === 'synced'
-            ? 'Connected. The app reads and writes your Google Sheet.'
-            : syncStatus === 'offline'
-              ? 'Sheet is configured but could not be reached. Check the API id and your internet.'
-              : syncStatus === 'loading'
-                ? 'Syncing with your Google Sheet…'
-                : 'No sheet connected. Paste your SheetDB API id to use a Google Sheet as the database.'}
-        </p>
-        <form className="form-row" onSubmit={submitConnect}>
-          <input
-            value={sheetIdInput}
-            onChange={(e) => setSheetIdInput(e.target.value)}
-            placeholder="SheetDB API id"
-          />
-          <button type="submit" className="btn btn-primary">
-            {syncStatus === 'unconfigured' ? 'Connect' : 'Update / connect'}
-          </button>
-        </form>
-        {syncStatus === 'synced' && (
-          <button className="btn btn-sm mt-8" onClick={onRefresh}>
-            Refresh from sheet
-          </button>
-        )}
-      </div>
+      {tab === 'members' && (
+        <div className="tab-panel">
+          <div className="admin-section-title">Members</div>
+          {members.length === 0 ? (
+            <div className="empty-state">No members yet. Add the first one below.</div>
+          ) : (
+            <div className="roster">{members.map((m) => renderRow('member', m))}</div>
+          )}
 
-      <div className="btn-row">
-        <button className="btn" onClick={onBack}>
-          Back
-        </button>
-        <button className="btn btn-danger" onClick={onReset}>
-          Reset all data
-        </button>
-      </div>
+          {showAddMember ? (
+            <form className="add-form" onSubmit={submitMember}>
+              <div className="form-grid">
+                <input
+                  value={memberName}
+                  onChange={(e) => setMemberName(e.target.value)}
+                  placeholder="Member name"
+                />
+                <input
+                  value={memberFellowship}
+                  onChange={(e) => setMemberFellowship(e.target.value)}
+                  placeholder="Fellowship / group"
+                />
+                <select
+                  value={memberLocation}
+                  onChange={(e) => setMemberLocation(e.target.value)}
+                >
+                  {locationOptions()}
+                </select>
+              </div>
+              <div className="btn-row">
+                <button type="submit" className="btn btn-primary">
+                  Add member
+                </button>
+                <button type="button" className="btn" onClick={() => setShowAddMember(false)}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : (
+            <button className="btn btn-outline" onClick={() => setShowAddMember(true)}>
+              + Add member
+            </button>
+          )}
+        </div>
+      )}
+
+      {tab === 'attendance' && (
+        <div className="tab-panel">
+          <div className="admin-section-title">Recent attendance</div>
+          {history.length === 0 ? (
+            <div className="empty-state">No attendance recorded yet.</div>
+          ) : (
+            <div className="history-list">
+              {history.map(([date, entry]) => {
+                const presentCount = entry.records.filter((r) => r.present).length
+                return (
+                  <div className="history-card" key={date}>
+                    <div className="history-top">
+                      <span className="date">{new Date(date).toDateString()}</span>
+                      <span className="count-badge">
+                        {presentCount} / {entry.records.length}
+                      </span>
+                    </div>
+                    <div className="details">
+                      {presentCount} present &middot; taken by {entry.takenBy}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'settings' && (
+        <div className="tab-panel">
+          <div className="admin-section-title">Google Sheet database</div>
+          <div className="settings-box">
+            <p>
+              {syncStatus === 'synced'
+                ? 'Connected. The app reads and writes your Google Sheet.'
+                : syncStatus === 'offline'
+                  ? 'Sheet is configured but could not be reached. Check the API id and your internet.'
+                  : syncStatus === 'loading'
+                    ? 'Syncing with your Google Sheet…'
+                    : 'No sheet connected. Paste your SheetDB API id to use a Google Sheet as the database.'}
+            </p>
+            <form className="form-row" onSubmit={submitConnect}>
+              <input
+                value={sheetIdInput}
+                onChange={(e) => setSheetIdInput(e.target.value)}
+                placeholder="SheetDB API id"
+              />
+              <button type="submit" className="btn btn-primary">
+                {syncStatus === 'unconfigured' ? 'Connect' : 'Update / connect'}
+              </button>
+            </form>
+            {syncStatus === 'synced' && (
+              <button className="btn btn-sm mt-8" onClick={onRefresh}>
+                Refresh from sheet
+              </button>
+            )}
+          </div>
+
+          <div className="admin-section-title">Danger zone</div>
+          <div className="btn-row">
+            <button className="btn" onClick={onBack}>
+              &larr; Back
+            </button>
+            <button className="btn btn-danger" onClick={onReset}>
+              Reset all data
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
