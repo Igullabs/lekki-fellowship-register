@@ -255,7 +255,8 @@ function Landing({
       </header>
 
       <main>
-        <section className="hero">
+        <section className="hero" style={{ backgroundImage: 'url(/images/church-community.jpg)' }}>
+          <div className="hero-overlay" />
           <div className="hero-inner">
             <span className="hero-badge">
               {CHURCH_NAME} &middot; {CHURCH_LOCATION}
@@ -396,14 +397,17 @@ function Landing({
             <FeatureCard
               title="Daily attendance"
               description="Mark members present or absent and save the register for the day. Updates are kept automatically."
+              image="/images/people-gathering.jpg"
             />
             <FeatureCard
               title="Member management"
               description="Add and remove members by fellowship and location across Lekki, from Phase 1 to Sangotedo."
+              image="/images/lagos-skyline.jpg"
             />
             <FeatureCard
               title="Leader profiles"
               description="Each leader has their own profile so the right person takes the right register, every meeting."
+              image="/images/church-community.jpg"
             />
           </div>
         </section>
@@ -419,10 +423,17 @@ function Landing({
   )
 }
 
-function FeatureCard({ title, description }) {
+function FeatureCard({ title, description, image }) {
   return (
     <div className="feature-card">
-      <div className="feature-card-dot" />
+      {image && (
+        <img
+          src={image}
+          alt={title}
+          className="feature-card-image"
+          loading="lazy"
+        />
+      )}
       <h3 className="feature-card-title">{title}</h3>
       <p className="feature-card-text">{description}</p>
     </div>
