@@ -15,6 +15,7 @@ export const SHEET_NAMES = {
   leaders: 'leaders',
   members: 'members',
   attendance: 'attendance',
+  reports: 'reports',
 }
 
 const STORAGE_KEY = 'lekki_sheetdb_id'
@@ -63,6 +64,14 @@ async function request(path, options = {}) {
 
 export async function fetchRows(sheet) {
   return request(`?sheet=${sheet}`)
+}
+
+export async function safeFetchRows(sheet) {
+  try {
+    return await fetchRows(sheet)
+  } catch (e) {
+    return []
+  }
 }
 
 export async function addRows(sheet, rows) {

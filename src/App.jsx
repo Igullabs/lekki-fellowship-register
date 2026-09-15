@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import {
   isSheetConfigured,
   configureSheet,
   SHEET_NAMES,
   fetchRows,
+  safeFetchRows,
   addRows,
   updateRows,
   deleteRows,
@@ -16,6 +17,10 @@ const CHURCH_NAME = 'Lekki Fellowship'
 const CHURCH_LOCATION = 'Lekki, Lagos State'
 
 const CACHE_KEY = 'lekki_fellowship_state'
+const VIEW_KEY = 'lekki_view'
+const LEADER_KEY = 'lekki_selected_leader'
+const ADMIN_KEY = 'lekki_admin_session'
+const ADMIN_SESSION_TTL = 30 * 60 * 1000 // 30 minutes
 
 const LEKKI_LOCATIONS = [
   'Lekki Phase 1',
@@ -43,6 +48,7 @@ const seed = () => ({
       name: 'Ade Johnson',
       fellowship: 'Teens',
       location: 'Lekki Phase 1',
+      phone: '0803 123 4567',
       addedAt: Date.now(),
     },
     {
@@ -50,6 +56,7 @@ const seed = () => ({
       name: 'Sarah Okafor',
       fellowship: 'Singles',
       location: 'Ajah',
+      phone: '0805 987 6543',
       addedAt: Date.now(),
     },
   ],
@@ -62,13 +69,19 @@ const seed = () => ({
     { id: 'm6', name: 'Grace Ogu', fellowship: 'Workers', location: 'Oniru' },
   ],
   attendance: {},
+  reports: [],
 })
 
 function normalize(state) {
   return {
-    leaders: (state.leaders || []).map((l) => ({ location: 'Lekki', ...l })),
+    leaders: (state.leaders || []).map((l) => ({
+      location: 'Lekki',
+      phone: '',
+      ...l,
+    })),
     members: (state.members || []).map((m) => ({ location: 'Lekki', ...m })),
     attendance: state.attendance || {},
+    reports: state.reports || [],
   }
 }
 
@@ -90,6 +103,43 @@ function saveCache(state) {
   }
 }
 
+function loadView() {
+  try {
+    const v = localStorage.getItem(VIEW_KEY)
+    if (['admin', 'admin-login', 'attendance', 'report', 'landing'].includes(v)) return v
+  } catch (e) { /* ignore */ }
+  return 'landing'
+}
+
+function saveView(view) {
+  try { localStorage.setItem(VIEW_KEY, view) } catch (e) { /* ignore */ }
+}
+
+function loadLeaderId() {
+  try { return localStorage.getItem(LEADER_KEY) || '' } catch (e) { return '' }
+}
+
+function saveLeaderId(id) {
+  try { id ? localStorage.setItem(LEADER_KEY, id) : localStorage.removeItem(LEADER_KEY) } catch (e) { /* ignore */ }
+}
+
+function loadAdminSession() {
+  try {
+    const raw = localStorage.getItem(ADMIN_KEY)
+    if (!raw) return false
+    const s = JSON.parse(raw)
+    return s && s.authenticated && Date.now() - s.ts < ADMIN_SESSION_TTL
+  } catch (e) { return false }
+}
+
+function saveAdminSession() {
+  try { localStorage.setItem(ADMIN_KEY, JSON.stringify({ authenticated: true, ts: Date.now() })) } catch (e) { /* ignore */ }
+}
+
+function clearAdminSession() {
+  try { localStorage.removeItem(ADMIN_KEY) } catch (e) { /* ignore */ }
+}
+
 function groupAttendance(rows) {
   const map = {}
   for (const row of rows || []) {
@@ -99,23 +149,6 @@ function groupAttendance(rows) {
     if (row.takenBy) map[row.date].takenBy = row.takenBy
   }
   return map
-}
-
-function flattenAttendance(attendance) {
-  const rows = []
-  for (const date in attendance) {
-    const entry = attendance[date]
-    for (const r of entry.records) {
-      if (!r.memberId) continue
-      rows.push({
-        date,
-        memberId: r.memberId,
-        present: r.present ? 'true' : 'false',
-        takenBy: entry.takenBy || '',
-      })
-    }
-  }
-  return rows
 }
 
 function todayKey() {
@@ -133,31 +166,53 @@ function todayLabel() {
 
 export default function App() {
   const [state, setState] = useState(loadCache)
-  const [view, setView] = useState('landing')
-  const [selectedLeaderId, setSelectedLeaderId] = useState('')
+  const [view, setView] = useState(() => {
+    const v = loadView()
+    if (v === 'admin' && !loadAdminSession()) return 'landing'
+    return v
+  })
+  const [selectedLeaderId, setSelectedLeaderId] = useState(loadLeaderId)
   const [syncStatus, setSyncStatus] = useState(
     isSheetConfigured() ? 'loading' : 'unconfigured'
   )
+  const [toasts, setToasts] = useState([])
+  const toastId = useRef(0)
+
+  const addToast = useCallback((message, tone = 'success') => {
+    const id = ++toastId.current
+    setToasts((t) => [...t, { id, message, tone }])
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3200)
+  }, [])
 
   useEffect(() => {
     saveCache(state)
   }, [state])
 
   useEffect(() => {
+    saveView(view)
+  }, [view])
+
+  useEffect(() => {
+    saveLeaderId(selectedLeaderId)
+  }, [selectedLeaderId])
+
+  useEffect(() => {
     if (!isSheetConfigured()) return
     let cancelled = false
     ;(async () => {
       try {
-        const [leaders, members, attendance] = await Promise.all([
+        const [leaders, members, attendance, reports] = await Promise.all([
           fetchRows(SHEET_NAMES.leaders),
           fetchRows(SHEET_NAMES.members),
           fetchRows(SHEET_NAMES.attendance),
+          safeFetchRows(SHEET_NAMES.reports),
         ])
         if (cancelled) return
         const loaded = {
           leaders: leaders.length ? leaders : [],
           members: members.length ? members : [],
           attendance: groupAttendance(attendance),
+          reports: reports || [],
         }
         if (loaded.leaders.length || loaded.members.length) {
           setState(loaded)
@@ -172,11 +227,12 @@ export default function App() {
     }
   }, [])
 
-  const { leaders, members, attendance } = state
+  const { leaders, members, attendance, reports } = state
 
   const addLeader = async (leader) => {
     const nextLeaders = [...state.leaders, leader]
     setState((s) => ({ ...s, leaders: nextLeaders }))
+    addToast('Leader added')
     if (!isSheetConfigured()) return
     try {
       await addRows(SHEET_NAMES.leaders, [leader])
@@ -189,6 +245,7 @@ export default function App() {
   const addMember = async (member) => {
     const nextMembers = [...state.members, member]
     setState((s) => ({ ...s, members: nextMembers }))
+    addToast('Member added')
     if (!isSheetConfigured()) return
     try {
       await addRows(SHEET_NAMES.members, [member])
@@ -201,6 +258,7 @@ export default function App() {
   const removeMember = async (id) => {
     const nextMembers = state.members.filter((m) => m.id !== id)
     setState((s) => ({ ...s, members: nextMembers }))
+    addToast('Member removed')
     if (!isSheetConfigured()) return
     try {
       await deleteRows(SHEET_NAMES.members, { id })
@@ -215,6 +273,7 @@ export default function App() {
       l.id === id ? { ...l, ...updates } : l
     )
     setState((s) => ({ ...s, leaders: nextLeaders }))
+    addToast('Leader updated')
     if (!isSheetConfigured()) return
     try {
       await updateRows(SHEET_NAMES.leaders, 'id', id, updates)
@@ -229,6 +288,7 @@ export default function App() {
       m.id === id ? { ...m, ...updates } : m
     )
     setState((s) => ({ ...s, members: nextMembers }))
+    addToast('Member updated')
     if (!isSheetConfigured()) return
     try {
       await updateRows(SHEET_NAMES.members, 'id', id, updates)
@@ -242,6 +302,7 @@ export default function App() {
     const nextLeaders = state.leaders.filter((l) => l.id !== id)
     setState((s) => ({ ...s, leaders: nextLeaders }))
     if (selectedLeaderId === id) setSelectedLeaderId('')
+    addToast('Leader removed')
     if (!isSheetConfigured()) return
     try {
       await deleteRows(SHEET_NAMES.leaders, { id })
@@ -254,6 +315,7 @@ export default function App() {
   const saveAttendance = async (date, records, takenBy) => {
     const nextAttendance = { ...state.attendance, [date]: { records, takenBy } }
     setState((s) => ({ ...s, attendance: nextAttendance }))
+    addToast('Attendance saved')
     if (!isSheetConfigured()) return
     try {
       await deleteRows(SHEET_NAMES.attendance, { date })
@@ -272,23 +334,56 @@ export default function App() {
     }
   }
 
+  const addReport = async (report) => {
+    const next = [...state.reports, report]
+    setState((s) => ({ ...s, reports: next }))
+    addToast('Report sent to admin')
+    if (!isSheetConfigured()) return
+    try {
+      await addRows(SHEET_NAMES.reports, [report])
+      setSyncStatus('synced')
+    } catch (e) {
+      setSyncStatus('offline')
+    }
+  }
+
+  const markReportRead = async (id) => {
+    setState((s) => ({
+      ...s,
+      reports: (s.reports || []).map((r) =>
+        r.id === id ? { ...r, read: 'true' } : r
+      ),
+    }))
+    if (!isSheetConfigured()) return
+    try {
+      await updateRows(SHEET_NAMES.reports, 'id', id, { read: 'true' })
+      setSyncStatus('synced')
+    } catch (e) {
+      setSyncStatus('offline')
+    }
+  }
+
   const refreshFromSheet = async () => {
     if (!isSheetConfigured()) return
     setSyncStatus('loading')
     try {
-      const [leaders, members, attendance] = await Promise.all([
+      const [leaders, members, attendance, reports] = await Promise.all([
         fetchRows(SHEET_NAMES.leaders),
         fetchRows(SHEET_NAMES.members),
         fetchRows(SHEET_NAMES.attendance),
+        safeFetchRows(SHEET_NAMES.reports),
       ])
       setState({
         leaders: leaders.length ? leaders : [],
         members: members.length ? members : [],
         attendance: groupAttendance(attendance),
+        reports: reports || [],
       })
       setSyncStatus('synced')
+      addToast('Data refreshed from Google Sheets')
     } catch (e) {
       setSyncStatus('offline')
+      addToast('Could not reach the Google Sheet', 'warn')
     }
   }
 
@@ -300,17 +395,20 @@ export default function App() {
     }
     setSyncStatus('loading')
     try {
-      const [leaders, members, attendance] = await Promise.all([
+      const [leaders, members, attendance, reports] = await Promise.all([
         fetchRows(SHEET_NAMES.leaders),
         fetchRows(SHEET_NAMES.members),
         fetchRows(SHEET_NAMES.attendance),
+        safeFetchRows(SHEET_NAMES.reports),
       ])
       setState({
         leaders: leaders.length ? leaders : [],
         members: members.length ? members : [],
         attendance: groupAttendance(attendance),
+        reports: reports || [],
       })
       setSyncStatus('synced')
+      addToast('Google Sheet connected')
     } catch (e) {
       setSyncStatus('offline')
     }
@@ -321,11 +419,14 @@ export default function App() {
     setState(fresh)
     setView('landing')
     setSelectedLeaderId('')
+    clearAdminSession()
+    addToast('All data reset')
     if (!isSheetConfigured()) return
     try {
       await deleteAllRows(SHEET_NAMES.leaders)
       await deleteAllRows(SHEET_NAMES.members)
       await deleteAllRows(SHEET_NAMES.attendance)
+      await deleteAllRows(SHEET_NAMES.reports)
       setState(seed())
       setSyncStatus('synced')
     } catch (e) {
@@ -342,12 +443,15 @@ export default function App() {
         selectedLeaderId={selectedLeaderId}
         syncStatus={syncStatus}
         onLeaderChange={setSelectedLeaderId}
-        onAddLeader={addLeader}
         onEnterAdmin={() => setView('admin-login')}
         onConnect={connectSheet}
         onStartAttendance={(id) => {
           setSelectedLeaderId(id)
           setView('attendance')
+        }}
+        onStartReport={(id) => {
+          setSelectedLeaderId(id)
+          setView('report')
         }}
       />
     )
@@ -358,7 +462,10 @@ export default function App() {
       <div className="card">
         {view === 'admin-login' && (
           <AdminLogin
-            onSuccess={() => setView('admin')}
+            onSuccess={() => {
+              saveAdminSession()
+              setView('admin')
+            }}
             onBack={() => setView('landing')}
           />
         )}
@@ -367,6 +474,7 @@ export default function App() {
             leaders={leaders}
             members={members}
             attendance={attendance}
+            reports={reports}
             syncStatus={syncStatus}
             onRefresh={refreshFromSheet}
             onConnect={connectSheet}
@@ -376,8 +484,12 @@ export default function App() {
             onEditMember={editMember}
             onRemoveLeader={removeLeader}
             onRemoveMember={removeMember}
+            onMarkReportRead={markReportRead}
             onReset={resetApp}
-            onBack={() => setView('landing')}
+            onBack={() => {
+              clearAdminSession()
+              setView('landing')
+            }}
           />
         )}
         {view === 'attendance' && (
@@ -389,8 +501,89 @@ export default function App() {
             onBack={() => setView('landing')}
           />
         )}
+        {view === 'report' && (
+          <ReportView
+            leader={leaders.find((l) => l.id === selectedLeaderId)}
+            onSend={addReport}
+            onBack={() => setView('landing')}
+          />
+        )}
       </div>
+      <ToastStack toasts={toasts} />
     </div>
+  )
+}
+
+function ToastStack({ toasts }) {
+  return (
+    <div className="toast-stack" aria-live="polite">
+      {toasts.map((t) => (
+        <div key={t.id} className={'toast toast-' + (t.tone || 'success')}>
+          {t.message}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ReportView({ leader, onSend, onBack }) {
+  const [message, setMessage] = useState('')
+  const [sent, setSent] = useState(false)
+
+  const submit = (e) => {
+    e.preventDefault()
+    if (!leader || !message.trim()) return
+    onSend({
+      id: 'r' + Date.now(),
+      date: todayKey(),
+      leaderId: leader.id,
+      leaderName: leader.name,
+      message: message.trim(),
+      read: 'false',
+    })
+    setMessage('')
+    setSent(true)
+  }
+
+  return (
+    <>
+      <div className="card-title">Send a report to the admin</div>
+      <div className="card-subtitle">
+        {leader
+          ? `Reporting as ${leader.name} · ${leader.fellowship}`
+          : 'Select your leader profile first.'}
+      </div>
+
+      {sent ? (
+        <div className="report-sent">
+          <div className="report-sent-icon">&#10003;</div>
+          <p>Your report has been sent to the admin. Thank you.</p>
+          <button className="btn" onClick={() => setSent(false)}>
+            Send another report
+          </button>
+        </div>
+      ) : (
+        <form onSubmit={submit}>
+          <div className="form-group">
+            <label>What would you like to report?</label>
+            <textarea
+              className="report-input"
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              placeholder="e.g. Attendance was low this week, a few members travelled. Prayer requests: …"
+              rows="5"
+            />
+          </div>
+          <button type="submit" className="btn btn-primary btn-full" disabled={!message.trim()}>
+            Send report
+          </button>
+        </form>
+      )}
+
+      <button type="button" className="btn mt-8 btn-full" onClick={onBack}>
+        Back
+      </button>
+    </>
   )
 }
 
@@ -401,15 +594,11 @@ function Landing({
   selectedLeaderId,
   syncStatus,
   onLeaderChange,
-  onAddLeader,
   onEnterAdmin,
   onConnect,
   onStartAttendance,
+  onStartReport,
 }) {
-  const [showAddForm, setShowAddForm] = useState(false)
-  const [name, setName] = useState('')
-  const [fellowship, setFellowship] = useState('')
-  const [location, setLocation] = useState('Lekki Phase 1')
   const [showConnect, setShowConnect] = useState(false)
   const [sheetId, setSheetId] = useState('')
 
@@ -419,22 +608,6 @@ function Landing({
     onConnect(sheetId)
     setSheetId('')
     setShowConnect(false)
-  }
-
-  const submitLeader = (e) => {
-    e.preventDefault()
-    if (!name.trim() || !fellowship.trim()) return
-    onAddLeader({
-      id: 'l' + Date.now(),
-      name: name.trim(),
-      fellowship: fellowship.trim(),
-      location,
-      addedAt: Date.now(),
-    })
-    setName('')
-    setFellowship('')
-    setLocation('Lekki Phase 1')
-    setShowAddForm(false)
   }
 
   const leader = leaders.find((l) => l.id === selectedLeaderId)
@@ -584,55 +757,21 @@ function Landing({
               disabled={!selectedLeaderId}
               onClick={() => onStartAttendance(leader.id)}
             >
-              Open attendance register
+              Take attendance
             </button>
             <button
               className="btn btn-outline"
-              onClick={() => setShowAddForm((v) => !v)}
+              disabled={!selectedLeaderId}
+              onClick={() => onStartReport(leader.id)}
             >
-              + Add myself as a leader
+              Send report to admin
             </button>
           </div>
 
-          {showAddForm && (
-            <form className="add-leader-form mt-8" onSubmit={submitLeader}>
-              <div className="form-group">
-                <label htmlFor="leader-name">Your name</label>
-                <input
-                  id="leader-name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Ade Johnson"
-                />
-              </div>
-              <div className="form-group">
-                <label htmlFor="leader-fellowship">Fellowship / group</label>
-                <input
-                  id="leader-fellowship"
-                  value={fellowship}
-                  onChange={(e) => setFellowship(e.target.value)}
-                  placeholder="e.g. Teens"
-                />
-              </div>
-              <div className="form-group">
-                <label htmlFor="leader-location">Location (Lekki, Lagos)</label>
-                <select
-                  id="leader-location"
-                  value={location}
-                  onChange={(e) => setLocation(e.target.value)}
-                >
-                  {LEKKI_LOCATIONS.map((loc) => (
-                    <option key={loc} value={loc}>
-                      {loc}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <button type="submit" className="btn btn-primary btn-full">
-                Save leader
-              </button>
-            </form>
-          )}
+          <p className="signin-hint">
+            Leaders can take attendance and send reports back to the admin.
+            Member and leader registration is managed by the admin.
+          </p>
         </section>
 
         <section className="features">
@@ -755,6 +894,7 @@ function AdminPanel({
   leaders,
   members,
   attendance,
+  reports,
   syncStatus,
   onRefresh,
   onConnect,
@@ -764,6 +904,7 @@ function AdminPanel({
   onEditMember,
   onRemoveLeader,
   onRemoveMember,
+  onMarkReportRead,
   onReset,
   onBack,
 }) {
@@ -773,6 +914,7 @@ function AdminPanel({
   const [leaderName, setLeaderName] = useState('')
   const [leaderFellowship, setLeaderFellowship] = useState('')
   const [leaderLocation, setLeaderLocation] = useState('Lekki Phase 1')
+  const [leaderPhone, setLeaderPhone] = useState('')
   const [memberName, setMemberName] = useState('')
   const [memberFellowship, setMemberFellowship] = useState('')
   const [memberLocation, setMemberLocation] = useState('Lekki Phase 1')
@@ -786,6 +928,7 @@ function AdminPanel({
     : 0
   const todayTotal = todayEntry ? todayEntry.records.length : 0
   const recordDays = Object.keys(attendance).length
+  const unreadReports = (reports || []).filter((r) => r.read !== 'true').length
 
   const submitConnect = (e) => {
     e.preventDefault()
@@ -802,11 +945,13 @@ function AdminPanel({
       name: leaderName.trim(),
       fellowship: leaderFellowship.trim() || 'General',
       location: leaderLocation,
+      phone: leaderPhone.trim(),
       addedAt: Date.now(),
     })
     setLeaderName('')
     setLeaderFellowship('')
     setLeaderLocation('Lekki Phase 1')
+    setLeaderPhone('')
     setShowAddLeader(false)
   }
 
@@ -832,6 +977,7 @@ function AdminPanel({
       name: item.name,
       fellowship: item.fellowship || 'General',
       location: item.location || 'Lekki Phase 1',
+      phone: item.phone || '',
     })
   }
 
@@ -843,8 +989,12 @@ function AdminPanel({
       fellowship: editing.fellowship.trim() || 'General',
       location: editing.location,
     }
-    if (editing.type === 'leader') onEditLeader(editing.id, updates)
-    else onEditMember(editing.id, updates)
+    if (editing.type === 'leader') {
+      updates.phone = editing.phone.trim()
+      onEditLeader(editing.id, updates)
+    } else {
+      onEditMember(editing.id, updates)
+    }
     setEditing(null)
   }
 
@@ -854,10 +1004,17 @@ function AdminPanel({
       .slice(0, 10)
   }, [attendance])
 
+  const sortedReports = useMemo(() => {
+    return (reports || []).slice().sort((a, b) =>
+      a.id < b.id ? 1 : -1
+    )
+  }, [reports])
+
   const tabButtons = [
     { id: 'leaders', label: 'Leaders', count: leaders.length },
     { id: 'members', label: 'Members', count: members.length },
     { id: 'attendance', label: 'Attendance' },
+    { id: 'reports', label: 'Reports', count: unreadReports, unread: unreadReports },
     { id: 'settings', label: 'Settings' },
   ]
 
@@ -887,6 +1044,14 @@ function AdminPanel({
         >
           {locationOptions()}
         </select>
+        {editing.type === 'leader' && (
+          <input
+            value={editing.phone}
+            onChange={(e) => setEditing({ ...editing, phone: e.target.value })}
+            placeholder="Phone number"
+            type="tel"
+          />
+        )}
       </div>
       <div className="btn-row">
         <button type="submit" className="btn btn-primary btn-sm">
@@ -926,6 +1091,11 @@ function AdminPanel({
           <span className="member-name">{item.name}</span>
           <span className="member-meta">
             {item.fellowship} <span className="pill">{item.location || 'Lekki'}</span>
+            {type === 'leader' && item.phone && (
+              <a className="phone-link" href={`tel:${item.phone}`}>
+                &#9742; {item.phone}
+              </a>
+            )}
           </span>
         </div>
         {rowActions(type, item)}
@@ -972,7 +1142,11 @@ function AdminPanel({
             onClick={() => setTab(t.id)}
           >
             {t.label}
-            {typeof t.count === 'number' && <span className="tab-count">{t.count}</span>}
+            {typeof t.count === 'number' && (
+              <span className={'tab-count' + (t.unread ? ' unread' : '')}>
+                {t.count}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -1005,6 +1179,12 @@ function AdminPanel({
                 >
                   {locationOptions()}
                 </select>
+                <input
+                  value={leaderPhone}
+                  onChange={(e) => setLeaderPhone(e.target.value)}
+                  placeholder="Phone number"
+                  type="tel"
+                />
               </div>
               <div className="btn-row">
                 <button type="submit" className="btn btn-primary">
@@ -1097,6 +1277,47 @@ function AdminPanel({
         </div>
       )}
 
+      {tab === 'reports' && (
+        <div className="tab-panel">
+          <div className="admin-section-title">Leader reports</div>
+          <p className="panel-note">
+            Reports sent by leaders are shown here. Tap "Mark read" once
+            you have seen one.
+          </p>
+          {sortedReports.length === 0 ? (
+            <div className="empty-state">No reports from leaders yet.</div>
+          ) : (
+            <div className="report-list">
+              {sortedReports.map((r) => (
+                <div
+                  key={r.id}
+                  className={'report-card' + (r.read === 'true' ? ' read' : '')}
+                >
+                  <div className="report-head">
+                    <span className="report-author">
+                      <span className="report-avatar">
+                        {r.leaderName ? r.leaderName.charAt(0).toUpperCase() : '?'}
+                      </span>
+                      {r.leaderName}
+                    </span>
+                    {r.read !== 'true' && <span className="unread-pill">New</span>}
+                  </div>
+                  <p className="report-body">{r.message}</p>
+                  <div className="report-foot">
+                    <span className="report-date">{new Date(r.date + 'T00:00:00').toDateString()}</span>
+                    {r.read !== 'true' && (
+                      <button className="btn btn-sm" onClick={() => onMarkReportRead(r.id)}>
+                        Mark read
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {tab === 'settings' && (
         <div className="tab-panel">
           <div className="admin-section-title">Google Sheet database</div>
@@ -1172,7 +1393,7 @@ function AttendanceView({ leader, members, attendance, onSave, onBack }) {
       <div className="card-title">Attendance register</div>
       <div className="card-subtitle">
         {leader
-          ? `${leader.name} — ${leader.fellowship} fellowship · ${leader.location || 'Lekki'}`
+          ? `${leader.name} — ${leader.fellowship} fellowship · ${leader.location || 'Lekki'}`
           : 'Register'}
       </div>
       <span className="date-badge">{label}</span>
