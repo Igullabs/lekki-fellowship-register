@@ -1,14 +1,10 @@
 // Google Sheets bridge via SheetDB (https://sheetdb.io)
 //
-// How to connect (done once, from the app's admin panel or manually):
-//  1. Create a Google Sheet at https://sheets.new
-//  2. Add three tabs named exactly: "leaders", "members", "attendance"
-//     with the headers described below.
-//  3. At https://sheetdb.io/dashboard create an API from that sheet URL
-//     and follow SheetDB's Google share step (Edit access).
-//  4. Copy the API id (the part after /api/v1/) into the app's
-//     "Connect Google Sheet" box. It is saved on this browser, so the
-//     whole app reads/writes that spreadsheet.
+// This deployment is attached to a spreadsheet by default (DEFAULT_SHEET_ID
+// below). To point the app at a different spreadsheet, create a Google Sheet,
+// add tabs named exactly "leaders", "members" and "attendance", create an API
+// at https://sheetdb.io/dashboard for it, then paste the API id into the app's
+// "Google Sheet database" box in the Admin panel (saved per browser).
 //
 // Sheet columns:
 //  leaders   : id | name | fellowship | location | addedAt
@@ -22,12 +18,15 @@ export const SHEET_NAMES = {
 }
 
 const STORAGE_KEY = 'lekki_sheetdb_id'
+// Default spreadsheet attached to this deployment. The in-app "Connect
+// Google Sheet" box can override it per browser.
+const DEFAULT_SHEET_ID = 'c80ktq1fvhr2b'
 
 export function getSheetId() {
   try {
-    return localStorage.getItem(STORAGE_KEY) || ''
+    return localStorage.getItem(STORAGE_KEY) || DEFAULT_SHEET_ID
   } catch (e) {
-    return ''
+    return DEFAULT_SHEET_ID
   }
 }
 
