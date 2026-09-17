@@ -151,6 +151,14 @@ function groupAttendance(rows) {
   return map
 }
 
+function validNamedRows(rows) {
+  return (rows || []).filter((r) => r && r.name)
+}
+
+function validReports(rows) {
+  return (rows || []).filter((r) => r && r.message)
+}
+
 function todayKey() {
   return new Date().toISOString().slice(0, 10)
 }
@@ -209,10 +217,10 @@ export default function App() {
         ])
         if (cancelled) return
         const loaded = {
-          leaders: leaders.length ? leaders : [],
-          members: members.length ? members : [],
+          leaders: validNamedRows(leaders),
+          members: validNamedRows(members),
           attendance: groupAttendance(attendance),
-          reports: reports || [],
+          reports: validReports(reports),
         }
         if (loaded.leaders.length || loaded.members.length) {
           setState(loaded)
@@ -269,6 +277,7 @@ export default function App() {
   }
 
   const editLeader = async (id, updates) => {
+    const prev = state.leaders.find((l) => l.id === id)
     const nextLeaders = state.leaders.map((l) =>
       l.id === id ? { ...l, ...updates } : l
     )
@@ -276,7 +285,10 @@ export default function App() {
     addToast('Leader updated')
     if (!isSheetConfigured()) return
     try {
-      await updateRows(SHEET_NAMES.leaders, 'id', id, updates)
+      await updateRows(SHEET_NAMES.leaders, 'id', id, {
+        ...(prev || {}),
+        ...updates,
+      })
       setSyncStatus('synced')
     } catch (e) {
       setSyncStatus('offline')
@@ -284,6 +296,7 @@ export default function App() {
   }
 
   const editMember = async (id, updates) => {
+    const prev = state.members.find((m) => m.id === id)
     const nextMembers = state.members.map((m) =>
       m.id === id ? { ...m, ...updates } : m
     )
@@ -291,7 +304,10 @@ export default function App() {
     addToast('Member updated')
     if (!isSheetConfigured()) return
     try {
-      await updateRows(SHEET_NAMES.members, 'id', id, updates)
+      await updateRows(SHEET_NAMES.members, 'id', id, {
+        ...(prev || {}),
+        ...updates,
+      })
       setSyncStatus('synced')
     } catch (e) {
       setSyncStatus('offline')
@@ -348,6 +364,7 @@ export default function App() {
   }
 
   const markReportRead = async (id) => {
+    const report = (state.reports || []).find((r) => r.id === id)
     setState((s) => ({
       ...s,
       reports: (s.reports || []).map((r) =>
@@ -356,7 +373,10 @@ export default function App() {
     }))
     if (!isSheetConfigured()) return
     try {
-      await updateRows(SHEET_NAMES.reports, 'id', id, { read: 'true' })
+      await updateRows(SHEET_NAMES.reports, 'id', id, {
+        ...(report || {}),
+        read: 'true',
+      })
       setSyncStatus('synced')
     } catch (e) {
       setSyncStatus('offline')
@@ -374,10 +394,10 @@ export default function App() {
         safeFetchRows(SHEET_NAMES.reports),
       ])
       setState({
-        leaders: leaders.length ? leaders : [],
-        members: members.length ? members : [],
+        leaders: validNamedRows(leaders),
+        members: validNamedRows(members),
         attendance: groupAttendance(attendance),
-        reports: reports || [],
+        reports: validReports(reports),
       })
       setSyncStatus('synced')
       addToast('Data refreshed from Google Sheets')
@@ -402,10 +422,10 @@ export default function App() {
         safeFetchRows(SHEET_NAMES.reports),
       ])
       setState({
-        leaders: leaders.length ? leaders : [],
-        members: members.length ? members : [],
+        leaders: validNamedRows(leaders),
+        members: validNamedRows(members),
         attendance: groupAttendance(attendance),
-        reports: reports || [],
+        reports: validReports(reports),
       })
       setSyncStatus('synced')
       addToast('Google Sheet connected')
@@ -526,6 +546,17 @@ function ToastStack({ toasts }) {
   )
 }
 
+function BackLink({ onClick, children = 'Back' }) {
+  return (
+    <button type="button" className="back-link" onClick={onClick}>
+      <span className="back-arrow" aria-hidden="true">
+        &larr;
+      </span>
+      {children}
+    </button>
+  )
+}
+
 function ReportView({ leader, onSend, onBack }) {
   const [message, setMessage] = useState('')
   const [sent, setSent] = useState(false)
@@ -547,6 +578,7 @@ function ReportView({ leader, onSend, onBack }) {
 
   return (
     <>
+      <BackLink onClick={onBack} />
       <div className="card-title">Send a report to the admin</div>
       <div className="card-subtitle">
         {leader
@@ -579,10 +611,6 @@ function ReportView({ leader, onSend, onBack }) {
           </button>
         </form>
       )}
-
-      <button type="button" className="btn mt-8 btn-full" onClick={onBack}>
-        Back
-      </button>
     </>
   )
 }
@@ -862,6 +890,7 @@ function AdminLogin({ onSuccess, onBack }) {
 
   return (
     <>
+      <BackLink onClick={onBack} />
       <div className="card-title">Admin sign in</div>
       <div className="card-subtitle">
         Enter the admin password to manage the register.
@@ -891,9 +920,6 @@ function AdminLogin({ onSuccess, onBack }) {
         )}
         <button type="submit" className="btn btn-primary btn-full">
           Sign in
-        </button>
-        <button type="button" className="btn mt-8 btn-full" onClick={onBack}>
-          Back
         </button>
       </form>
     </>
@@ -1114,6 +1140,7 @@ function AdminPanel({
 
   return (
     <div className="admin-panel">
+      <BackLink onClick={onBack} />
       <div className="admin-head">
         <div>
           <div className="card-title">Admin dashboard</div>
@@ -1360,9 +1387,6 @@ function AdminPanel({
 
           <div className="admin-section-title">Danger zone</div>
           <div className="btn-row">
-            <button className="btn" onClick={onBack}>
-              &larr; Back
-            </button>
             <button className="btn btn-danger" onClick={onReset}>
               Reset all data
             </button>
@@ -1400,10 +1424,11 @@ function AttendanceView({ leader, members, attendance, onSave, onBack }) {
 
   return (
     <>
+      <BackLink onClick={onBack} />
       <div className="card-title">Attendance register</div>
       <div className="card-subtitle">
         {leader
-          ? `${leader.name} — ${leader.fellowship} fellowship · ${leader.location || 'Lekki'}`
+          ? `${leader.name} · ${leader.fellowship} fellowship · ${leader.location || 'Lekki'}`
           : 'Register'}
       </div>
       <span className="date-badge">{label}</span>
@@ -1440,9 +1465,6 @@ function AttendanceView({ leader, members, attendance, onSave, onBack }) {
       <div className="btn-row">
         <button className="btn btn-primary" disabled={records.length === 0} onClick={submit}>
           Save register
-        </button>
-        <button className="btn" onClick={onBack}>
-          Back
         </button>
       </div>
     </>

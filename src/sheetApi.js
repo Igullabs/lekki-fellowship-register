@@ -6,10 +6,11 @@
 // at https://sheetdb.io/dashboard for it, then paste the API id into the app's
 // "Google Sheet database" box in the Admin panel (saved per browser).
 //
-// Sheet columns:
-//  leaders   : id | name | fellowship | location | addedAt
+// Sheet columns (Google Sheet tabs must have these exact headers):
+//  leaders   : id | name | fellowship | location | phone | addedAt
 //  members   : id | name | fellowship | location
 //  attendance: date | memberId | present | takenBy
+//  reports   : id | date | leaderId | leaderName | message | read
 
 export const SHEET_NAMES = {
   leaders: 'leaders',
@@ -82,13 +83,15 @@ export async function addRows(sheet, rows) {
 }
 
 export async function updateRows(sheet, column, value, data) {
-  return request(
-    `/${encodeURIComponent(column)}/${encodeURIComponent(value)}?sheet=${sheet}`,
-    {
-      method: 'PATCH',
-      body: JSON.stringify({ data }),
-    }
-  )
+  // SheetDB free plan does not support PATCH/PUT with any path form. Emulate
+  // an update by deleting the matching row and re-inserting the complete
+  // replacement row (data must be the full row, not a partial update).
+  try {
+    await deleteRows(sheet, { [column]: value })
+  } catch (e) {
+    // row may not exist in the sheet yet; the insert below still applies
+  }
+  await addRows(sheet, [data])
 }
 
 export async function deleteRows(sheet, criteria) {

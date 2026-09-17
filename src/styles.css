@@ -521,6 +521,29 @@ input:focus, select:focus {
   background: #eef2ef;
 }
 
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 4px 0;
+  margin-bottom: 14px;
+  color: var(--primary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.back-arrow {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.back-link:hover {
+  text-decoration: underline;
+}
+
 .admin-panel .admin-section-title {
   font-size: 14px;
   font-weight: 600;
