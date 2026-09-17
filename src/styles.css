@@ -494,6 +494,33 @@ input:focus, select:focus {
   text-align: center;
 }
 
+.password-field {
+  position: relative;
+}
+
+.password-field input {
+  padding-right: 68px;
+}
+
+.password-toggle {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+
+.password-toggle:hover {
+  background: #eef2ef;
+}
+
 .admin-panel .admin-section-title {
   font-size: 14px;
   font-weight: 600;

@@ -847,6 +847,7 @@ function SyncStatus({ status }) {
 
 function AdminLogin({ onSuccess, onBack }) {
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState(false)
 
   const submit = (e) => {
@@ -868,13 +869,22 @@ function AdminLogin({ onSuccess, onBack }) {
       <form onSubmit={submit}>
         <div className="form-group">
           <label htmlFor="admin-password">Admin password</label>
-          <input
-            id="admin-password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="••••••"
-          />
+          <div className="password-field">
+            <input
+              id="admin-password"
+              type={showPassword ? 'text' : 'password'}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••"
+            />
+            <button
+              type="button"
+              className="password-toggle"
+              onClick={() => setShowPassword((s) => !s)}
+            >
+              {showPassword ? 'Hide' : 'View'}
+            </button>
+          </div>
         </div>
         {error && (
           <div className="no-leaders">Incorrect password. Try again.</div>
