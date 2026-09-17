@@ -145,7 +145,7 @@ function groupAttendance(rows) {
   for (const row of rows || []) {
     if (!row.date) continue
     map[row.date] = map[row.date] || { records: [], takenBy: '' }
-    map[row.date].records.push({ memberId: row.memberId, present: row.present === 'true' || row.present === true })
+    map[row.date].records.push({ memberId: row.memberId, present: isTruthy(row.present) })
     if (row.takenBy) map[row.date].takenBy = row.takenBy
   }
   return map
@@ -157,6 +157,16 @@ function validNamedRows(rows) {
 
 function validReports(rows) {
   return (rows || []).filter((r) => r && r.message)
+}
+
+function isTruthy(value) {
+  return (
+    value === true ||
+    value === 'true' ||
+    value === 'TRUE' ||
+    value === '1' ||
+    value === 1
+  )
 }
 
 function todayKey() {
@@ -964,7 +974,7 @@ function AdminPanel({
     : 0
   const todayTotal = todayEntry ? todayEntry.records.length : 0
   const recordDays = Object.keys(attendance).length
-  const unreadReports = (reports || []).filter((r) => r.read !== 'true').length
+  const unreadReports = (reports || []).filter((r) => !isTruthy(r.read)).length
 
   const submitConnect = (e) => {
     e.preventDefault()
@@ -1328,7 +1338,7 @@ function AdminPanel({
               {sortedReports.map((r) => (
                 <div
                   key={r.id}
-                  className={'report-card' + (r.read === 'true' ? ' read' : '')}
+                  className={'report-card' + (isTruthy(r.read) ? ' read' : '')}
                 >
                   <div className="report-head">
                     <span className="report-author">
@@ -1337,12 +1347,12 @@ function AdminPanel({
                       </span>
                       {r.leaderName}
                     </span>
-                    {r.read !== 'true' && <span className="unread-pill">New</span>}
+                    {!isTruthy(r.read) && <span className="unread-pill">New</span>}
                   </div>
                   <p className="report-body">{r.message}</p>
                   <div className="report-foot">
                     <span className="report-date">{new Date(r.date + 'T00:00:00').toDateString()}</span>
-                    {r.read !== 'true' && (
+                    {!isTruthy(r.read) && (
                       <button className="btn btn-sm" onClick={() => onMarkReportRead(r.id)}>
                         Mark read
                       </button>
