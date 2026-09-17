@@ -16,7 +16,7 @@ const ADMIN_PASSWORD = 'admin'
 const CHURCH_NAME = 'Lekki Fellowship'
 const CHURCH_LOCATION = 'Lekki, Lagos State'
 
-const CACHE_KEY = 'lekki_fellowship_state'
+const CACHE_KEY = 'lekki_fellowship_state_v2'
 const VIEW_KEY = 'lekki_view'
 const LEADER_KEY = 'lekki_selected_leader'
 const ADMIN_KEY = 'lekki_admin_session'
@@ -41,33 +41,9 @@ const LEKKI_LOCATIONS = [
   'Other',
 ]
 
-const seed = () => ({
-  leaders: [
-    {
-      id: 'l1',
-      name: 'Ade Johnson',
-      fellowship: 'Teens',
-      location: 'Lekki Phase 1',
-      phone: '0803 123 4567',
-      addedAt: Date.now(),
-    },
-    {
-      id: 'l2',
-      name: 'Sarah Okafor',
-      fellowship: 'Singles',
-      location: 'Ajah',
-      phone: '0805 987 6543',
-      addedAt: Date.now(),
-    },
-  ],
-  members: [
-    { id: 'm1', name: 'Chinedu Eze', fellowship: 'Teens', location: 'Ikate' },
-    { id: 'm2', name: 'Mary Adeyemi', fellowship: 'Singles', location: 'Chevron' },
-    { id: 'm3', name: 'Tunde Bakare', fellowship: 'Workers', location: 'Lekki Phase 2' },
-    { id: 'm4', name: 'Blessing Nwosu', fellowship: 'Teens', location: 'Ikota' },
-    { id: 'm5', name: 'Emeka Obi', fellowship: 'Singles', location: 'Jakande' },
-    { id: 'm6', name: 'Grace Ogu', fellowship: 'Workers', location: 'Oniru' },
-  ],
+const emptyState = () => ({
+  leaders: [],
+  members: [],
   attendance: {},
   reports: [],
 })
@@ -90,9 +66,9 @@ function loadCache() {
     const raw = localStorage.getItem(CACHE_KEY)
     if (raw) return normalize(JSON.parse(raw))
   } catch (e) {
-    // ignore corrupt cache and use seed
+    // ignore corrupt cache and start empty
   }
-  return seed()
+  return emptyState()
 }
 
 function saveCache(state) {
@@ -232,9 +208,7 @@ export default function App() {
           attendance: groupAttendance(attendance),
           reports: validReports(reports),
         }
-        if (loaded.leaders.length || loaded.members.length) {
-          setState(loaded)
-        }
+        setState(loaded)
         setSyncStatus('synced')
       } catch (e) {
         if (!cancelled) setSyncStatus('offline')
@@ -445,7 +419,7 @@ export default function App() {
   }
 
   const resetApp = async () => {
-    const fresh = seed()
+    const fresh = emptyState()
     setState(fresh)
     setView('landing')
     setSelectedLeaderId('')
@@ -457,7 +431,7 @@ export default function App() {
       await deleteAllRows(SHEET_NAMES.members)
       await deleteAllRows(SHEET_NAMES.attendance)
       await deleteAllRows(SHEET_NAMES.reports)
-      setState(seed())
+      setState(emptyState())
       setSyncStatus('synced')
     } catch (e) {
       setSyncStatus('offline')
