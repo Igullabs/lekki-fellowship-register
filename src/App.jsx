@@ -9,7 +9,12 @@ import {
   updateRows,
   deleteRows,
   deleteAllRows,
+  replayPendingOp,
 } from './sheetApi'
+import { isTruthy, sessionDates, memberStats } from './stats'
+import { downloadCSV, downloadJSON } from './export'
+import MessagesView from './components/MessagesView'
+import AnalyticsView from './components/AnalyticsView'
 
 const ADMIN_PASSWORD = 'admin'
 
@@ -21,6 +26,8 @@ const VIEW_KEY = 'lekki_view'
 const LEADER_KEY = 'lekki_selected_leader'
 const ADMIN_KEY = 'lekki_admin_session'
 const ADMIN_SESSION_TTL = 30 * 60 * 1000 // 30 minutes
+const PENDING_KEY = 'lekki_pending_ops'
+const LAST_SYNC_KEY = 'lekki_last_synced'
 
 const LEKKI_LOCATIONS = [
   'Lekki Phase 1',
@@ -46,6 +53,8 @@ const emptyState = () => ({
   members: [],
   attendance: {},
   reports: [],
+  messages: [],
+  notes: [],
 })
 
 function normalize(state) {
@@ -58,6 +67,8 @@ function normalize(state) {
     members: (state.members || []).map((m) => ({ location: 'Lekki', ...m })),
     attendance: state.attendance || {},
     reports: state.reports || [],
+    messages: state.messages || [],
+    notes: state.notes || [],
   }
 }
 
@@ -82,7 +93,10 @@ function saveCache(state) {
 function loadView() {
   try {
     const v = localStorage.getItem(VIEW_KEY)
-    if (['admin', 'admin-login', 'attendance', 'report', 'landing'].includes(v)) return v
+    if (
+      ['admin', 'admin-login', 'attendance', 'report', 'messages', 'landing'].includes(v)
+    )
+      return v
   } catch (e) { /* ignore */ }
   return 'landing'
 }
@@ -116,6 +130,26 @@ function clearAdminSession() {
   try { localStorage.removeItem(ADMIN_KEY) } catch (e) { /* ignore */ }
 }
 
+function loadPendingOps() {
+  try {
+    return JSON.parse(localStorage.getItem(PENDING_KEY) || '[]')
+  } catch (e) {
+    return []
+  }
+}
+
+function savePendingOps(ops) {
+  try { localStorage.setItem(PENDING_KEY, JSON.stringify(ops)) } catch (e) { /* ignore */ }
+}
+
+function loadLastSynced() {
+  try {
+    return localStorage.getItem(LAST_SYNC_KEY) || null
+  } catch (e) {
+    return null
+  }
+}
+
 function groupAttendance(rows) {
   const map = {}
   for (const row of rows || []) {
@@ -135,14 +169,12 @@ function validReports(rows) {
   return (rows || []).filter((r) => r && r.message)
 }
 
-function isTruthy(value) {
-  return (
-    value === true ||
-    value === 'true' ||
-    value === 'TRUE' ||
-    value === '1' ||
-    value === 1
-  )
+function validMessages(rows) {
+  return (rows || []).filter((r) => r && r.message)
+}
+
+function validNotes(rows) {
+  return (rows || []).filter((r) => r && r.memberId && r.note)
 }
 
 function todayKey() {
@@ -171,12 +203,65 @@ export default function App() {
   )
   const [toasts, setToasts] = useState([])
   const toastId = useRef(0)
+  const [pendingOps, setPendingOpsState] = useState(loadPendingOps)
+  const [lastSynced, setLastSynced] = useState(loadLastSynced)
+
+  const setPendingOps = useCallback((ops) => {
+    setPendingOpsState(ops)
+    savePendingOps(ops)
+  }, [])
 
   const addToast = useCallback((message, tone = 'success') => {
     const id = ++toastId.current
     setToasts((t) => [...t, { id, message, tone }])
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3200)
   }, [])
+
+  const markSynced = useCallback(() => {
+    setSyncStatus('synced')
+    const ts = Date.now()
+    setLastSynced(ts)
+    try { localStorage.setItem(LAST_SYNC_KEY, String(ts)) } catch (e) { /* ignore */ }
+  }, [])
+
+  const enqueueOp = useCallback(
+    (op) => {
+      setPendingOps([...pendingOps, op])
+      setSyncStatus('offline')
+      addToast('Saved on this device — will sync when online', 'warn')
+    },
+    [pendingOps, setPendingOps, addToast]
+  )
+
+  const flushPending = useCallback(async () => {
+    const ops = loadPendingOps()
+    if (!ops.length || !isSheetConfigured()) return
+    setSyncStatus('loading')
+    const remaining = [...ops]
+    let flushed = 0
+    for (let i = 0; i < remaining.length; i++) {
+      try {
+        await replayPendingOp(remaining[i])
+        flushed++
+      } catch (e) {
+        break // preserve order; retry the rest later
+      }
+    }
+    const left = remaining.slice(flushed)
+    setPendingOps(left)
+    if (left.length === 0) {
+      markSynced()
+      if (flushed > 0) addToast(flushed + ' offline change' + (flushed > 1 ? 's' : '') + ' synced')
+    } else {
+      setSyncStatus('offline')
+    }
+  }, [setPendingOps, markSynced, addToast])
+
+  useEffect(() => {
+    const onOnline = () => flushPending()
+    window.addEventListener('online', onOnline)
+    return () => window.removeEventListener('online', onOnline)
+  }, [flushPending])
 
   useEffect(() => {
     saveCache(state)
@@ -195,21 +280,27 @@ export default function App() {
     let cancelled = false
     ;(async () => {
       try {
-        const [leaders, members, attendance, reports] = await Promise.all([
-          fetchRows(SHEET_NAMES.leaders),
-          fetchRows(SHEET_NAMES.members),
-          fetchRows(SHEET_NAMES.attendance),
-          safeFetchRows(SHEET_NAMES.reports),
-        ])
+        const [leaders, members, attendance, reports, messages, notes] =
+          await Promise.all([
+            fetchRows(SHEET_NAMES.leaders),
+            fetchRows(SHEET_NAMES.members),
+            fetchRows(SHEET_NAMES.attendance),
+            safeFetchRows(SHEET_NAMES.reports),
+            safeFetchRows(SHEET_NAMES.messages),
+            safeFetchRows(SHEET_NAMES.notes),
+          ])
         if (cancelled) return
         const loaded = {
           leaders: validNamedRows(leaders),
           members: validNamedRows(members),
           attendance: groupAttendance(attendance),
           reports: validReports(reports),
+          messages: validMessages(messages),
+          notes: validNotes(notes),
         }
         setState(loaded)
-        setSyncStatus('synced')
+        markSynced()
+        flushPending()
       } catch (e) {
         if (!cancelled) setSyncStatus('offline')
       }
@@ -217,20 +308,42 @@ export default function App() {
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const { leaders, members, attendance, reports } = state
+  const { leaders, members, attendance, reports, messages, notes } = state
+
+  const unreadReplies = useMemo(
+    () =>
+      (messages || []).filter(
+        (m) => m.fromRole === 'leader' && m.to === 'admin' && !isTruthy(m.read)
+      ).length,
+    [messages]
+  )
+
+  const leaderUnread = useMemo(() => {
+    const lid = selectedLeaderId
+    if (!lid) return 0
+    return (messages || []).filter(
+      (m) =>
+        m.fromRole === 'admin' &&
+        (m.to === lid || m.to === 'all') &&
+        !isTruthy(m.read)
+    ).length
+  }, [messages, selectedLeaderId])
 
   const addLeader = async (leader) => {
     const nextLeaders = [...state.leaders, leader]
     setState((s) => ({ ...s, leaders: nextLeaders }))
     addToast('Leader added')
     if (!isSheetConfigured()) return
+    const op = { kind: 'add', sheet: SHEET_NAMES.leaders, rows: [leader] }
     try {
-      await addRows(SHEET_NAMES.leaders, [leader])
-      setSyncStatus('synced')
+      await addRows(op.sheet, op.rows)
+      markSynced()
+      flushPending()
     } catch (e) {
-      setSyncStatus('offline')
+      enqueueOp(op)
     }
   }
 
@@ -239,11 +352,13 @@ export default function App() {
     setState((s) => ({ ...s, members: nextMembers }))
     addToast('Member added')
     if (!isSheetConfigured()) return
+    const op = { kind: 'add', sheet: SHEET_NAMES.members, rows: [member] }
     try {
-      await addRows(SHEET_NAMES.members, [member])
-      setSyncStatus('synced')
+      await addRows(op.sheet, op.rows)
+      markSynced()
+      flushPending()
     } catch (e) {
-      setSyncStatus('offline')
+      enqueueOp(op)
     }
   }
 
@@ -252,11 +367,13 @@ export default function App() {
     setState((s) => ({ ...s, members: nextMembers }))
     addToast('Member removed')
     if (!isSheetConfigured()) return
+    const op = { kind: 'deleteRows', sheet: SHEET_NAMES.members, criteria: { id } }
     try {
-      await deleteRows(SHEET_NAMES.members, { id })
-      setSyncStatus('synced')
+      await deleteRows(op.sheet, op.criteria)
+      markSynced()
+      flushPending()
     } catch (e) {
-      setSyncStatus('offline')
+      enqueueOp(op)
     }
   }
 
@@ -268,14 +385,19 @@ export default function App() {
     setState((s) => ({ ...s, leaders: nextLeaders }))
     addToast('Leader updated')
     if (!isSheetConfigured()) return
+    const op = {
+      kind: 'replace',
+      sheet: SHEET_NAMES.leaders,
+      column: 'id',
+      value: id,
+      data: { ...(prev || {}), ...updates },
+    }
     try {
-      await updateRows(SHEET_NAMES.leaders, 'id', id, {
-        ...(prev || {}),
-        ...updates,
-      })
-      setSyncStatus('synced')
+      await updateRows(op.sheet, op.column, op.value, op.data)
+      markSynced()
+      flushPending()
     } catch (e) {
-      setSyncStatus('offline')
+      enqueueOp(op)
     }
   }
 
@@ -287,14 +409,19 @@ export default function App() {
     setState((s) => ({ ...s, members: nextMembers }))
     addToast('Member updated')
     if (!isSheetConfigured()) return
+    const op = {
+      kind: 'replace',
+      sheet: SHEET_NAMES.members,
+      column: 'id',
+      value: id,
+      data: { ...(prev || {}), ...updates },
+    }
     try {
-      await updateRows(SHEET_NAMES.members, 'id', id, {
-        ...(prev || {}),
-        ...updates,
-      })
-      setSyncStatus('synced')
+      await updateRows(op.sheet, op.column, op.value, op.data)
+      markSynced()
+      flushPending()
     } catch (e) {
-      setSyncStatus('offline')
+      enqueueOp(op)
     }
   }
 
@@ -304,11 +431,13 @@ export default function App() {
     if (selectedLeaderId === id) setSelectedLeaderId('')
     addToast('Leader removed')
     if (!isSheetConfigured()) return
+    const op = { kind: 'deleteRows', sheet: SHEET_NAMES.leaders, criteria: { id } }
     try {
-      await deleteRows(SHEET_NAMES.leaders, { id })
-      setSyncStatus('synced')
+      await deleteRows(op.sheet, op.criteria)
+      markSynced()
+      flushPending()
     } catch (e) {
-      setSyncStatus('offline')
+      enqueueOp(op)
     }
   }
 
@@ -317,6 +446,7 @@ export default function App() {
     setState((s) => ({ ...s, attendance: nextAttendance }))
     addToast('Attendance saved')
     if (!isSheetConfigured()) return
+    const op = { kind: 'attendance', date, records, takenBy }
     try {
       await deleteRows(SHEET_NAMES.attendance, { date })
       await addRows(
@@ -328,9 +458,10 @@ export default function App() {
           takenBy,
         }))
       )
-      setSyncStatus('synced')
+      markSynced()
+      flushPending()
     } catch (e) {
-      setSyncStatus('offline')
+      enqueueOp(op)
     }
   }
 
@@ -339,11 +470,13 @@ export default function App() {
     setState((s) => ({ ...s, reports: next }))
     addToast('Report sent to admin')
     if (!isSheetConfigured()) return
+    const op = { kind: 'add', sheet: SHEET_NAMES.reports, rows: [report] }
     try {
-      await addRows(SHEET_NAMES.reports, [report])
-      setSyncStatus('synced')
+      await addRows(op.sheet, op.rows)
+      markSynced()
+      flushPending()
     } catch (e) {
-      setSyncStatus('offline')
+      enqueueOp(op)
     }
   }
 
@@ -356,14 +489,86 @@ export default function App() {
       ),
     }))
     if (!isSheetConfigured()) return
+    const op = {
+      kind: 'replace',
+      sheet: SHEET_NAMES.reports,
+      column: 'id',
+      value: id,
+      data: { ...(report || {}), read: 'true' },
+    }
     try {
-      await updateRows(SHEET_NAMES.reports, 'id', id, {
-        ...(report || {}),
-        read: 'true',
-      })
-      setSyncStatus('synced')
+      await updateRows(op.sheet, op.column, op.value, op.data)
+      markSynced()
+      flushPending()
     } catch (e) {
+      enqueueOp(op)
+    }
+  }
+
+  const addMessage = async (msg) => {
+    setState((s) => ({ ...s, messages: [...(s.messages || []), msg] }))
+    addToast('Message sent')
+    if (!isSheetConfigured()) return
+    const op = { kind: 'add', sheet: SHEET_NAMES.messages, rows: [msg] }
+    try {
+      await addRows(op.sheet, op.rows)
+      markSynced()
+      flushPending()
+    } catch (e) {
+      enqueueOp(op)
+    }
+  }
+
+  const markMessagesRead = async (ids) => {
+    if (!ids.length) return
+    const pendingIds = ids.filter((id) => {
+      const m = (state.messages || []).find((x) => x.id === id)
+      return m && !isTruthy(m.read)
+    })
+    if (!pendingIds.length) return
+    setState((s) => ({
+      ...s,
+      messages: (s.messages || []).map((m) =>
+        pendingIds.includes(m.id) ? { ...m, read: 'true' } : m
+      ),
+    }))
+    if (!isSheetConfigured()) return
+    const failed = []
+    for (const id of pendingIds) {
+      const prev = (state.messages || []).find((x) => x.id === id)
+      const op = {
+        kind: 'replace',
+        sheet: SHEET_NAMES.messages,
+        column: 'id',
+        value: id,
+        data: { ...(prev || {}), read: 'true' },
+      }
+      try {
+        await updateRows(op.sheet, op.column, op.value, op.data)
+      } catch (e) {
+        failed.push(op)
+      }
+    }
+    if (failed.length) {
+      setPendingOps([...pendingOps, ...failed])
       setSyncStatus('offline')
+    } else {
+      markSynced()
+    }
+    flushPending()
+  }
+
+  const addNote = async (note) => {
+    setState((s) => ({ ...s, notes: [...(s.notes || []), note] }))
+    addToast('Note saved')
+    if (!isSheetConfigured()) return
+    const op = { kind: 'add', sheet: SHEET_NAMES.notes, rows: [note] }
+    try {
+      await addRows(op.sheet, op.rows)
+      markSynced()
+      flushPending()
+    } catch (e) {
+      enqueueOp(op)
     }
   }
 
@@ -371,20 +576,26 @@ export default function App() {
     if (!isSheetConfigured()) return
     setSyncStatus('loading')
     try {
-      const [leaders, members, attendance, reports] = await Promise.all([
-        fetchRows(SHEET_NAMES.leaders),
-        fetchRows(SHEET_NAMES.members),
-        fetchRows(SHEET_NAMES.attendance),
-        safeFetchRows(SHEET_NAMES.reports),
-      ])
+      const [leaders, members, attendance, reports, messages, notes] =
+        await Promise.all([
+          fetchRows(SHEET_NAMES.leaders),
+          fetchRows(SHEET_NAMES.members),
+          fetchRows(SHEET_NAMES.attendance),
+          safeFetchRows(SHEET_NAMES.reports),
+          safeFetchRows(SHEET_NAMES.messages),
+          safeFetchRows(SHEET_NAMES.notes),
+        ])
       setState({
         leaders: validNamedRows(leaders),
         members: validNamedRows(members),
         attendance: groupAttendance(attendance),
         reports: validReports(reports),
+        messages: validMessages(messages),
+        notes: validNotes(notes),
       })
-      setSyncStatus('synced')
+      markSynced()
       addToast('Data refreshed from Google Sheets')
+      flushPending()
     } catch (e) {
       setSyncStatus('offline')
       addToast('Could not reach the Google Sheet', 'warn')
@@ -399,20 +610,26 @@ export default function App() {
     }
     setSyncStatus('loading')
     try {
-      const [leaders, members, attendance, reports] = await Promise.all([
-        fetchRows(SHEET_NAMES.leaders),
-        fetchRows(SHEET_NAMES.members),
-        fetchRows(SHEET_NAMES.attendance),
-        safeFetchRows(SHEET_NAMES.reports),
-      ])
+      const [leaders, members, attendance, reports, messages, notes] =
+        await Promise.all([
+          fetchRows(SHEET_NAMES.leaders),
+          fetchRows(SHEET_NAMES.members),
+          fetchRows(SHEET_NAMES.attendance),
+          safeFetchRows(SHEET_NAMES.reports),
+          safeFetchRows(SHEET_NAMES.messages),
+          safeFetchRows(SHEET_NAMES.notes),
+        ])
       setState({
         leaders: validNamedRows(leaders),
         members: validNamedRows(members),
         attendance: groupAttendance(attendance),
         reports: validReports(reports),
+        messages: validMessages(messages),
+        notes: validNotes(notes),
       })
-      setSyncStatus('synced')
+      markSynced()
       addToast('Google Sheet connected')
+      flushPending()
     } catch (e) {
       setSyncStatus('offline')
     }
@@ -426,14 +643,27 @@ export default function App() {
     clearAdminSession()
     addToast('All data reset')
     if (!isSheetConfigured()) return
-    try {
-      await deleteAllRows(SHEET_NAMES.leaders)
-      await deleteAllRows(SHEET_NAMES.members)
-      await deleteAllRows(SHEET_NAMES.attendance)
-      await deleteAllRows(SHEET_NAMES.reports)
+    const sheets = [
+      SHEET_NAMES.leaders,
+      SHEET_NAMES.members,
+      SHEET_NAMES.attendance,
+      SHEET_NAMES.reports,
+      SHEET_NAMES.messages,
+      SHEET_NAMES.notes,
+    ]
+    let allOk = true
+    for (const sheet of sheets) {
+      try {
+        await deleteAllRows(sheet)
+      } catch (e) {
+        allOk = false
+        enqueueOp({ kind: 'deleteAll', sheet })
+      }
+    }
+    if (allOk) {
       setState(emptyState())
-      setSyncStatus('synced')
-    } catch (e) {
+      markSynced()
+    } else {
       setSyncStatus('offline')
     }
   }
@@ -446,9 +676,12 @@ export default function App() {
         attendance={attendance}
         selectedLeaderId={selectedLeaderId}
         syncStatus={syncStatus}
+        pending={pendingOps.length}
+        lastSynced={lastSynced}
         onLeaderChange={setSelectedLeaderId}
         onEnterAdmin={() => setView('admin-login')}
         onConnect={connectSheet}
+        onSyncNow={flushPending}
         onStartAttendance={(id) => {
           setSelectedLeaderId(id)
           setView('attendance')
@@ -457,6 +690,11 @@ export default function App() {
           setSelectedLeaderId(id)
           setView('report')
         }}
+        onStartMessages={(id) => {
+          setSelectedLeaderId(id)
+          setView('messages')
+        }}
+        unreadMessages={leaderUnread}
       />
     )
   }
@@ -479,7 +717,12 @@ export default function App() {
             members={members}
             attendance={attendance}
             reports={reports}
+            messages={messages}
+            notes={notes}
             syncStatus={syncStatus}
+            pending={pendingOps.length}
+            lastSynced={lastSynced}
+            unreadReplies={unreadReplies}
             onRefresh={refreshFromSheet}
             onConnect={connectSheet}
             onAddLeader={addLeader}
@@ -489,7 +732,11 @@ export default function App() {
             onRemoveLeader={removeLeader}
             onRemoveMember={removeMember}
             onMarkReportRead={markReportRead}
+            onSendMessage={addMessage}
+            onMarkMessagesRead={markMessagesRead}
+            onAddNote={addNote}
             onReset={resetApp}
+            onSyncNow={flushPending}
             onBack={() => {
               clearAdminSession()
               setView('landing')
@@ -509,6 +756,17 @@ export default function App() {
           <ReportView
             leader={leaders.find((l) => l.id === selectedLeaderId)}
             onSend={addReport}
+            onBack={() => setView('landing')}
+          />
+        )}
+        {view === 'messages' && (
+          <MessagesView
+            viewer="leader"
+            leader={leaders.find((l) => l.id === selectedLeaderId)}
+            leaders={leaders}
+            messages={messages}
+            onSend={addMessage}
+            onMarkRead={markMessagesRead}
             onBack={() => setView('landing')}
           />
         )}
@@ -605,11 +863,16 @@ function Landing({
   attendance,
   selectedLeaderId,
   syncStatus,
+  pending = 0,
+  lastSynced = null,
   onLeaderChange,
   onEnterAdmin,
   onConnect,
+  onSyncNow,
   onStartAttendance,
   onStartReport,
+  onStartMessages,
+  unreadMessages = 0,
 }) {
   const [showConnect, setShowConnect] = useState(false)
   const [sheetId, setSheetId] = useState('')
@@ -645,7 +908,7 @@ function Landing({
           </span>
         </div>
         <div className="nav-actions">
-          <SyncStatus status={syncStatus} />
+          <SyncStatus status={syncStatus} pending={pending} onSync={onSyncNow} />
           {syncStatus === 'unconfigured' && (
             <button className="btn btn-outline btn-sm" onClick={() => setShowConnect(true)}>
               Connect Sheet
@@ -778,6 +1041,16 @@ function Landing({
             >
               Send report to admin
             </button>
+            <button
+              className="btn btn-outline"
+              disabled={!selectedLeaderId}
+              onClick={() => onStartMessages(leader.id)}
+            >
+              Messages
+              {unreadMessages > 0 && (
+                <span className="messages-badge">{unreadMessages}</span>
+              )}
+            </button>
           </div>
 
           <p className="signin-hint">
@@ -847,12 +1120,22 @@ const SYNC_LABELS = {
   unconfigured: { text: 'Sheet not connected yet', tone: 'warn' },
 }
 
-function SyncStatus({ status }) {
+function SyncStatus({ status, pending = 0, onSync }) {
   const info = SYNC_LABELS[status] || SYNC_LABELS.unconfigured
   return (
     <span className={`sync-status sync-${info.tone}`}>
       <span className="sync-dot" />
       {info.text}
+      {pending > 0 && (
+        <span className="sync-pending-count">
+          &middot; {pending} change{pending > 1 ? 's' : ''} pending
+        </span>
+      )}
+      {pending > 0 && (
+        <button type="button" className="sync-now" onClick={onSync}>
+          Sync now
+        </button>
+      )}
     </span>
   )
 }
@@ -915,7 +1198,12 @@ function AdminPanel({
   members,
   attendance,
   reports,
+  messages,
+  notes,
   syncStatus,
+  pending = 0,
+  lastSynced = null,
+  unreadReplies = 0,
   onRefresh,
   onConnect,
   onAddLeader,
@@ -925,7 +1213,11 @@ function AdminPanel({
   onRemoveLeader,
   onRemoveMember,
   onMarkReportRead,
+  onSendMessage,
+  onMarkMessagesRead,
+  onAddNote,
   onReset,
+  onSyncNow,
   onBack,
 }) {
   const [tab, setTab] = useState('leaders')
@@ -940,6 +1232,8 @@ function AdminPanel({
   const [memberLocation, setMemberLocation] = useState('Lekki Phase 1')
   const [editing, setEditing] = useState(null)
   const [sheetIdInput, setSheetIdInput] = useState('')
+  const [noteOpen, setNoteOpen] = useState(null)
+  const [noteText, setNoteText] = useState('')
 
   const today = todayKey()
   const todayEntry = attendance[today]
@@ -949,6 +1243,55 @@ function AdminPanel({
   const todayTotal = todayEntry ? todayEntry.records.length : 0
   const recordDays = Object.keys(attendance).length
   const unreadReports = (reports || []).filter((r) => !isTruthy(r.read)).length
+
+  const notesByMember = useMemo(() => {
+    const map = {}
+    for (const n of notes || []) {
+      if (!map[n.memberId]) map[n.memberId] = []
+      map[n.memberId].push(n)
+    }
+    for (const k of Object.keys(map)) {
+      map[k].sort((a, b) => (a.id < b.id ? -1 : 1))
+    }
+    return map
+  }, [notes])
+
+  const exportCSV = () => {
+    downloadCSV('lekki-fellowship-leaders.csv', leaders)
+    downloadCSV('lekki-fellowship-members.csv', members)
+    downloadCSV(
+      'lekki-fellowship-attendance.csv',
+      sessionDates(attendance).flatMap((d) =>
+        (attendance[d].records || []).map((r) => ({
+          date: d,
+          memberId: r.memberId,
+          present: r.present ? 'true' : 'false',
+          takenBy: attendance[d].takenBy || '',
+        }))
+      )
+    )
+    downloadCSV('lekki-fellowship-reports.csv', reports || [])
+    downloadCSV('lekki-fellowship-messages.csv', messages || [])
+  }
+
+  const exportJSON = () => {
+    downloadJSON('lekki-fellowship-backup.json', {
+      exportedAt: new Date().toISOString(),
+      leaders,
+      members,
+      reports: reports || [],
+      messages: messages || [],
+      notes: notes || [],
+      attendance: sessionDates(attendance).flatMap((d) =>
+        (attendance[d].records || []).map((r) => ({
+          date: d,
+          memberId: r.memberId,
+          present: r.present ? 'true' : 'false',
+          takenBy: attendance[d].takenBy || '',
+        }))
+      ),
+    })
+  }
 
   const submitConnect = (e) => {
     e.preventDefault()
@@ -1018,6 +1361,19 @@ function AdminPanel({
     setEditing(null)
   }
 
+  const submitNote = (e, memberId) => {
+    e.preventDefault()
+    if (!noteText.trim()) return
+    onAddNote({
+      id: 'n' + Date.now(),
+      memberId,
+      note: noteText.trim(),
+      date: todayKey(),
+      by: 'Admin',
+    })
+    setNoteText('')
+  }
+
   const history = useMemo(() => {
     return Object.entries(attendance)
       .sort((a, b) => (a[0] < b[0] ? 1 : -1))
@@ -1033,8 +1389,10 @@ function AdminPanel({
   const tabButtons = [
     { id: 'leaders', label: 'Leaders', count: leaders.length },
     { id: 'members', label: 'Members', count: members.length },
+    { id: 'analytics', label: 'Analytics' },
     { id: 'attendance', label: 'Attendance' },
     { id: 'reports', label: 'Reports', count: unreadReports, unread: unreadReports },
+    { id: 'messages', label: 'Messages', count: unreadReplies, unread: unreadReplies > 0 },
     { id: 'settings', label: 'Settings' },
   ]
 
@@ -1119,6 +1477,46 @@ function AdminPanel({
           </span>
         </div>
         {rowActions(type, item)}
+        {type === 'member' && (
+          <div className="member-notes">
+            <button
+              type="button"
+              className="note-toggle"
+              onClick={() => setNoteOpen((cur) => (cur === item.id ? null : item.id))}
+            >
+              {noteOpen === item.id ? 'Hide notes' : 'Notes'}
+              {(notesByMember[item.id] || []).length > 0 &&
+                ` (${notesByMember[item.id].length})`}
+            </button>
+            {noteOpen === item.id && (
+              <div className="notes-panel">
+                {(notesByMember[item.id] || []).length === 0 ? (
+                  <div className="no-leaders">No notes yet.</div>
+                ) : (
+                  notesByMember[item.id].map((n) => (
+                    <div className="note-item" key={n.id}>
+                      <span className="note-text">{n.note}</span>
+                      <span className="note-meta">
+                        {n.date}
+                        {n.by ? ` · ${n.by}` : ''}
+                      </span>
+                    </div>
+                  ))
+                )}
+                <form className="note-form" onSubmit={(e) => submitNote(e, item.id)}>
+                  <input
+                    value={noteText}
+                    onChange={(e) => setNoteText(e.target.value)}
+                    placeholder="Add a note…"
+                  />
+                  <button type="submit" className="btn btn-sm" disabled={!noteText.trim()}>
+                    Add
+                  </button>
+                </form>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     )
 
@@ -1130,7 +1528,14 @@ function AdminPanel({
           <div className="card-title">Admin dashboard</div>
           <div className="card-subtitle">Manage leaders, members and registers.</div>
         </div>
-        <SyncStatus status={syncStatus} />
+        <div className="admin-head-right">
+          <SyncStatus status={syncStatus} pending={pending} onSync={onSyncNow} />
+          {lastSynced && (
+            <span className="last-synced">
+              Last synced {new Date(Number(lastSynced)).toLocaleString('en-GB')}
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="stat-grid">
@@ -1270,6 +1675,12 @@ function AdminPanel({
         </div>
       )}
 
+      {tab === 'analytics' && (
+        <div className="tab-panel">
+          <AnalyticsView members={members} attendance={attendance} />
+        </div>
+      )}
+
       {tab === 'attendance' && (
         <div className="tab-panel">
           <div className="admin-section-title">Recent attendance</div>
@@ -1339,6 +1750,18 @@ function AdminPanel({
         </div>
       )}
 
+      {tab === 'messages' && (
+        <div className="tab-panel">
+          <MessagesView
+            viewer="admin"
+            leaders={leaders}
+            messages={messages}
+            onSend={onSendMessage}
+            onMarkRead={onMarkMessagesRead}
+          />
+        </div>
+      )}
+
       {tab === 'settings' && (
         <div className="tab-panel">
           <div className="admin-section-title">Google Sheet database</div>
@@ -1362,11 +1785,41 @@ function AdminPanel({
                 {syncStatus === 'unconfigured' ? 'Connect' : 'Update / connect'}
               </button>
             </form>
-            {syncStatus === 'synced' && (
-              <button className="btn btn-sm mt-8" onClick={onRefresh}>
+            <div className="btn-row mt-8">
+              <button className="btn btn-sm" onClick={onRefresh}>
                 Refresh from sheet
               </button>
+              {pending > 0 && (
+                <button className="btn btn-sm" onClick={onSyncNow}>
+                  Sync {pending} pending change{pending > 1 ? 's' : ''}
+                </button>
+              )}
+            </div>
+            {lastSynced && (
+              <p className="panel-note">
+                Last synced{' '}
+                {new Date(Number(lastSynced)).toLocaleString('en-GB', {
+                  day: 'numeric',
+                  month: 'short',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </p>
             )}
+          </div>
+
+          <div className="admin-section-title">Backup &amp; export</div>
+          <p className="panel-note">
+            Download your data as backup. JSON keeps everything; CSV gives you
+            spreadsheet files for each tab.
+          </p>
+          <div className="btn-row">
+            <button className="btn btn-outline" onClick={exportJSON}>
+              Export all (JSON)
+            </button>
+            <button className="btn btn-outline" onClick={exportCSV}>
+              Export CSV files
+            </button>
           </div>
 
           <div className="admin-section-title">Danger zone</div>
@@ -1390,6 +1843,12 @@ function AttendanceView({ leader, members, attendance, onSave, onBack }) {
       ? existing.records
       : members.map((m) => ({ memberId: m.id, present: false }))
   )
+  const [search, setSearch] = useState('')
+
+  const stats = useMemo(
+    () => memberStats(members, attendance),
+    [members, attendance]
+  )
 
   const memberMap = useMemo(
     () => Object.fromEntries(members.map((m) => [m.id, m])),
@@ -1405,6 +1864,19 @@ function AttendanceView({ leader, members, attendance, onSave, onBack }) {
   const submit = () => {
     onSave(date, records, leader ? leader.name : 'Unknown')
   }
+
+  const q = search.trim().toLowerCase()
+  const visible = q
+    ? records.filter((r) => {
+        const m = memberMap[r.memberId]
+        return (
+          (m && m.name.toLowerCase().includes(q)) ||
+          (m && m.fellowship && m.fellowship.toLowerCase().includes(q)) ||
+          (m && m.location && m.location.toLowerCase().includes(q))
+        )
+      })
+    : records
+  const matchCount = records.length - visible.length
 
   return (
     <>
@@ -1422,14 +1894,26 @@ function AttendanceView({ leader, members, attendance, onSave, onBack }) {
           register below.
         </div>
       )}
+      <input
+        className="attendance-search"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search by name, fellowship or area…"
+      />
+      {q && matchCount > 0 && (
+        <div className="no-leaders">
+          {matchCount} hidden by search
+        </div>
+      )}
       <div className="attendance-list">
         {records.length === 0 ? (
           <div className="no-leaders">
             No members on register yet. Ask an admin to add members.
           </div>
         ) : (
-          records.map((r) => {
+          visible.map((r) => {
             const member = memberMap[r.memberId]
+            const st = stats[r.memberId]
             return (
               <AttendanceRow
                 key={r.memberId}
@@ -1437,6 +1921,7 @@ function AttendanceView({ leader, members, attendance, onSave, onBack }) {
                 fellowship={member ? member.fellowship : ''}
                 location={member ? member.location : ''}
                 present={r.present}
+                status={st ? statusChip(st) : ''}
                 onToggle={() => setPresent(r.memberId, !r.present)}
               />
             )
@@ -1455,11 +1940,21 @@ function AttendanceView({ leader, members, attendance, onSave, onBack }) {
   )
 }
 
-function AttendanceRow({ name, fellowship, location, present, onToggle }) {
+function statusChip(st) {
+  if (st.attended === 0) return { label: 'First meeting', tone: 'new' }
+  if (st.absentWeeks >= 3) return { label: `Back after ${st.absentWeeks}`, tone: 'due' }
+  if (st.streak >= 3) return { label: `Streak ${st.streak}`, tone: 'hot' }
+  return ''
+}
+
+function AttendanceRow({ name, fellowship, location, present, status, onToggle }) {
   return (
     <div className="attendance-row">
       <div>
-        <div className="name">{name}</div>
+        <div className="name">
+          {name}
+          {status && <span className={`chip chip-${status.tone}`}>{status.label}</span>}
+        </div>
         <div className="no-leaders">
           {fellowship}
           {location ? ` · ${location}` : ''}

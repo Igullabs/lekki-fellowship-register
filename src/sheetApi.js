@@ -11,12 +11,17 @@
 //  members   : id | name | fellowship | location
 //  attendance: date | memberId | present | takenBy
 //  reports   : id | date | leaderId | leaderName | message | read
+//  messages  : id | date | fromRole | fromName | to | message | read
+//              (to is 'admin', a leader id, or 'all' for a broadcast)
+//  notes     : id | memberId | note | date | by
 
 export const SHEET_NAMES = {
   leaders: 'leaders',
   members: 'members',
   attendance: 'attendance',
   reports: 'reports',
+  messages: 'messages',
+  notes: 'notes',
 }
 
 const STORAGE_KEY = 'lekki_sheetdb_id'
@@ -106,4 +111,41 @@ export async function deleteRows(sheet, criteria) {
 
 export async function deleteAllRows(sheet) {
   return request(`/all?sheet=${sheet}`, { method: 'DELETE' })
+}
+
+// Replays a queued, offline-saved operation against the sheet. Op kinds:
+//  add          : { kind, sheet, rows }
+//  deleteRows   : { kind, sheet, criteria }
+//  deleteAll    : { kind, sheet }
+//  replace      : { kind, sheet, column, value, data }  (full-row update)
+//  attendance   : { kind, date, records, takenBy }
+export async function replayPendingOp(op) {
+  switch (op.kind) {
+    case 'add':
+      await addRows(op.sheet, op.rows)
+      break
+    case 'deleteRows':
+      await deleteRows(op.sheet, op.criteria)
+      break
+    case 'deleteAll':
+      await deleteAllRows(op.sheet)
+      break
+    case 'replace':
+      await updateRows(op.sheet, op.column, op.value, op.data)
+      break
+    case 'attendance':
+      await deleteRows(SHEET_NAMES.attendance, { date: op.date })
+      await addRows(
+        SHEET_NAMES.attendance,
+        op.records.map((r) => ({
+          date: op.date,
+          memberId: r.memberId,
+          present: r.present ? 'true' : 'false',
+          takenBy: op.takenBy,
+        }))
+      )
+      break
+    default:
+      throw new Error('Unknown pending op: ' + op.kind)
+  }
 }
