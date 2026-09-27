@@ -756,6 +756,18 @@ input:focus, select:focus {
   margin-bottom: 12px;
 }
 
+.field-hint {
+  color: var(--text-sub);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.leader-tag {
+  color: var(--text-sub);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .empty-state {
   background: #fafaf8;
   border: 1px dashed var(--border);

@@ -1230,6 +1230,7 @@ function AdminPanel({
   const [memberName, setMemberName] = useState('')
   const [memberFellowship, setMemberFellowship] = useState('')
   const [memberLocation, setMemberLocation] = useState('Lekki Phase 1')
+  const [memberLeaderId, setMemberLeaderId] = useState('')
   const [editing, setEditing] = useState(null)
   const [sheetIdInput, setSheetIdInput] = useState('')
   const [noteOpen, setNoteOpen] = useState(null)
@@ -1255,6 +1256,28 @@ function AdminPanel({
     }
     return map
   }, [notes])
+
+  // Leaders grouped for the onboarding picker: sorted by house fellowship so
+  // every member of the same house sits next to each other in the dropdown.
+  const leadersByFellowship = useMemo(() => {
+    return (leaders || []).slice().sort((a, b) => {
+      const fa = (a.fellowship || '').toLowerCase()
+      const fb = (b.fellowship || '').toLowerCase()
+      if (fa !== fb) return fa < fb ? -1 : 1
+      return (a.name || '') < (b.name || '') ? -1 : 1
+    })
+  }, [leaders])
+
+  // A member's house leader is implied by their fellowship, so the roster can
+  // show the leader's name for any member without storing a leaderId column.
+  const leaderByFellowship = useMemo(() => {
+    const map = {}
+    for (const l of leaders || []) {
+      const key = (l.fellowship || '').trim().toLowerCase()
+      if (key && !map[key]) map[key] = l
+    }
+    return map
+  }, [leaders])
 
   const exportCSV = () => {
     downloadCSV('lekki-fellowship-leaders.csv', leaders)
@@ -1318,6 +1341,18 @@ function AdminPanel({
     setShowAddLeader(false)
   }
 
+  // Picking a house leader seeds the member's fellowship and location from
+  // that leader's house group. Both fields stay editable so the admin can
+  // override them before saving.
+  const chooseMemberLeader = (e) => {
+    const leaderId = e.target.value
+    setMemberLeaderId(leaderId)
+    const leader = (leaders || []).find((l) => l.id === leaderId)
+    if (!leader) return
+    if (leader.fellowship) setMemberFellowship(leader.fellowship)
+    if (leader.location) setMemberLocation(leader.location)
+  }
+
   const submitMember = (e) => {
     e.preventDefault()
     if (!memberName.trim()) return
@@ -1326,10 +1361,12 @@ function AdminPanel({
       name: memberName.trim(),
       fellowship: memberFellowship.trim() || 'General',
       location: memberLocation,
+      leaderId: memberLeaderId || '',
     })
     setMemberName('')
     setMemberFellowship('')
     setMemberLocation('Lekki Phase 1')
+    setMemberLeaderId('')
     setShowAddMember(false)
   }
 
@@ -1341,6 +1378,7 @@ function AdminPanel({
       fellowship: item.fellowship || 'General',
       location: item.location || 'Lekki Phase 1',
       phone: item.phone || '',
+      leaderId: item.leaderId || '',
     })
   }
 
@@ -1356,6 +1394,7 @@ function AdminPanel({
       updates.phone = editing.phone.trim()
       onEditLeader(editing.id, updates)
     } else {
+      updates.leaderId = editing.leaderId || ''
       onEditMember(editing.id, updates)
     }
     setEditing(null)
@@ -1422,6 +1461,23 @@ function AdminPanel({
         >
           {locationOptions()}
         </select>
+        {editing.type === 'member' && (
+          <select
+            value={editing.leaderId || ''}
+            onChange={(e) =>
+              setEditing({ ...editing, leaderId: e.target.value })
+            }
+          >
+            <option value="">
+              {leaders.length === 0 ? 'No leaders yet' : 'No leader / unassigned'}
+            </option>
+            {leadersByFellowship.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.fellowship ? `${l.fellowship} \u2014 ${l.name}` : l.name}
+              </option>
+            ))}
+          </select>
+        )}
         {editing.type === 'leader' && (
           <input
             value={editing.phone}
@@ -1458,6 +1514,12 @@ function AdminPanel({
     </div>
   )
 
+const houseLeaderFor = (member) => {
+  if (member.leaderId)
+    return (leaders || []).find((l) => l.id === member.leaderId)
+  return leaderByFellowship[(member.fellowship || '').trim().toLowerCase()]
+}
+
   const renderRow = (type, item) =>
     editing && editing.type === type && editing.id === item.id ? (
       <div className="member-row edit-row" key={item.id}>
@@ -1469,6 +1531,9 @@ function AdminPanel({
           <span className="member-name">{item.name}</span>
           <span className="member-meta">
             {item.fellowship} <span className="pill">{item.location || 'Lekki'}</span>
+            {type === 'member' && houseLeaderFor(item) && (
+              <span className="leader-tag">Under {houseLeaderFor(item).name}</span>
+            )}
             {type === 'leader' && item.phone && (
               <a className="phone-link" href={`tel:${item.phone}`}>
                 &#9742; {item.phone}
@@ -1640,6 +1705,32 @@ function AdminPanel({
 
           {showAddMember ? (
             <form className="add-form" onSubmit={submitMember}>
+              <div className="form-group">
+                <label htmlFor="member-leader">House leader</label>
+                <select
+                  id="member-leader"
+                  value={memberLeaderId}
+                  onChange={chooseMemberLeader}
+                >
+                  <option value="">
+                    {leaders.length === 0
+                      ? 'No leaders yet'
+                      : 'Select the member\u2019s house leader\u2026'}
+                  </option>
+                  {leadersByFellowship.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.fellowship
+                        ? `${l.fellowship} \u2014 ${l.name}`
+                        : l.name}
+                    </option>
+                  ))}
+                </select>
+<span className="field-hint">
+  {leaders.length === 0
+    ? 'Add a leader in the Leaders tab first, or just type the fellowship below.'
+    : 'Choosing a leader attaches the member to their house group and fills in the fellowship and location.'}
+</span>
+              </div>
               <div className="form-grid">
                 <input
                   value={memberName}
